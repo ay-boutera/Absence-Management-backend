@@ -1,0 +1,272 @@
+"""
+services/oauth_service.py — Google OAuth2 Flow
+================================================
+Handles the complete Google OAuth2 authorization code flow.
+
+Full sequence:
+    Step 1 — GET /auth/google
+    Server generates an authorization URL with a random 'state' parameter
+    (CSRF protection for the OAuth flow itself) and returns it to the frontend.
+    Frontend redirects the browser to Google's consent screen.
+
+    Step 2 — Google → GET /auth/google/callback?code=...&state=...
+    Google redirects back with an authorization 'code'.
+    Server:
+        a. Validates 'state' matches what we stored in Redis (CSRF check)
+        b. Exchanges 'code' for tokens at Google's token endpoint
+        c. Fetches the user's profile (email, name, picture) from Google
+        d. Validates email matches @esi-sba.dz pattern
+        e. Finds existing user OR creates a new one (first-time login)
+        f. Issues our own JWT tokens and sets HttpOnly cookies
+        g. Redirects browser to the React frontend dashboard
+
+Why store 'state' in Redis?
+    The state parameter prevents CSRF attacks on the OAuth callback itself.
+    We generate a random string, store it in Redis with a 10-minute TTL,
+    and verify it when Google calls us back. No state match = reject.
+
+Why link by email AND google_id?
+    - First login: find by email → link google_id to existing account
+    (Admin may have pre-created the account before the user ever logged in)
+    - Subsequent logins: find directly by google_id (faster, more stable)
+"""
+
+import secrets
+from typing import Optional
+
+import httpx
+from authlib.integrations.httpx_client import AsyncOAuth2Client
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from fastapi import HTTPException, status
+
+from app.models.user import User, UserRole
+from app.models.audit_log import AuditLog, ActionType
+from app.core.email_validator import validate_esi_email, extract_name_hint_from_email
+from app.core.security import create_access_token, create_refresh_token
+from app.services.redis_service import RedisService
+from app.config import settings
+
+# ── Google OAuth2 endpoints ────────────────────────────────────────────────────
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+# Scopes we request from Google:
+#   openid    — gives us the 'sub' (google_id) and id_token
+#   email     — gives us the verified email address
+#   profile   — gives us name and picture URL
+GOOGLE_SCOPES = "openid email profile"
+
+# Redis key prefix for OAuth state storage
+_STATE_PREFIX = "oauth_state:"
+_STATE_TTL = 600  # 10 minutes
+
+
+class OAuthService:
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+        self.redis = RedisService()
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+    def _make_client(self) -> AsyncOAuth2Client:
+        """Create a configured Authlib OAuth2 client."""
+        return AsyncOAuth2Client(
+            client_id=settings.GOOGLE_CLIENT_ID,
+            client_secret=settings.GOOGLE_CLIENT_SECRET,
+            redirect_uri=settings.GOOGLE_REDIRECT_URI,
+            scope=GOOGLE_SCOPES,
+        )
+
+    async def _log(
+        self,
+        action: ActionType,
+        user_id: Optional[str] = None,
+        details: Optional[str] = None,
+        ip: Optional[str] = None,
+    ):
+        log = AuditLog(
+            user_id=user_id,
+            action=action,
+            resource_type="oauth",
+            details=details,
+            ip_address=ip,
+        )
+        self.db.add(log)
+
+    # ── Step 1: Generate authorization URL ───────────────────────────────────
+    async def get_authorization_url(self) -> str:
+        """
+        Build the Google consent screen URL and store the state in Redis.
+
+        The 'state' is a random string we send to Google; Google echoes it
+        back in the callback. We verify it matches what we stored.
+        This prevents an attacker from forging a callback request.
+        """
+        state = secrets.token_urlsafe(32)
+
+        # Store state in Redis — expires in 10 min
+        await self.redis._client.setex(f"{_STATE_PREFIX}{state}", _STATE_TTL, "1")
+
+        async with self._make_client() as client:
+            url, _ = client.create_authorization_url(
+                GOOGLE_AUTH_URL,
+                state=state,
+                # access_type=offline would give a refresh_token from Google,
+                # but we don't need it — we issue our own refresh tokens.
+                prompt="select_account",  # always show account picker
+            )
+
+        return url
+
+    # ── Step 2: Handle callback ───────────────────────────────────────────────
+    async def handle_callback(
+        self,
+        code: str,
+        state: str,
+        ip_address: Optional[str] = None,
+    ) -> tuple[User, str, str, bool]:
+        """
+        Process the OAuth callback from Google.
+
+        Returns: (user, access_token, refresh_token, is_new_user)
+        Raises:  HTTPException on any failure
+        """
+        # ── a. Validate state (CSRF check for OAuth flow) ─────────────────────
+        stored = await self.redis._client.get(f"{_STATE_PREFIX}{state}")
+        if not stored:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired OAuth state. Please try logging in again.",
+            )
+        # Delete immediately — single use
+        await self.redis._client.delete(f"{_STATE_PREFIX}{state}")
+
+        # ── b. Exchange code for tokens ───────────────────────────────────────
+        async with self._make_client() as client:
+            try:
+                token_data = await client.fetch_token(
+                    GOOGLE_TOKEN_URL,
+                    code=code,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to exchange authorization code: {exc}",
+                )
+
+        # ── c. Fetch user profile from Google ─────────────────────────────────
+        async with httpx.AsyncClient() as http:
+            resp = await http.get(
+                GOOGLE_USERINFO_URL,
+                headers={"Authorization": f"Bearer {token_data['access_token']}"},
+            )
+
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not retrieve profile from Google. Please try again.",
+            )
+
+        google_profile = resp.json()
+        # Google userinfo fields: sub, email, email_verified, name,
+        #                         given_name, family_name, picture
+        google_id = google_profile.get("sub")
+        google_email = google_profile.get("email", "").lower()
+        is_verified = google_profile.get("email_verified", False)
+        given_name = google_profile.get("given_name", "")
+        family_name = google_profile.get("family_name", "")
+        avatar_url = google_profile.get("picture")
+
+        # ── d. Validate email is verified and matches ESI-SBA format ──────────
+        if not is_verified:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Google account email is not verified.",
+            )
+
+        validate_esi_email(google_email)  # raises 403 if not x.name@esi-sba.dz
+
+        # ── e. Find or create the user ────────────────────────────────────────
+        is_new_user = False
+
+        # First: look up by google_id (subsequent logins — fastest path)
+        result = await self.db.execute(select(User).where(User.google_id == google_id))
+        user = result.scalar_one_or_none()
+
+        if not user:
+            # Second: look up by email (first OAuth login for an existing account)
+            # The admin may have pre-created the account before the user logged in.
+            result = await self.db.execute(
+                select(User).where(User.email == google_email)
+            )
+            user = result.scalar_one_or_none()
+
+            if user:
+                # Link the Google identity to the existing account
+                user.google_id = google_id
+                user.avatar_url = avatar_url
+                self.db.add(user)
+            else:
+                # Brand new user — create the account automatically
+                # Name fallback: use email hints if Google didn't return names
+                if not given_name:
+                    hint = extract_name_hint_from_email(google_email)
+                    given_name = hint["first_initial"]
+                    family_name = hint["last_name"]
+
+                user = User(
+                    email=google_email,
+                    google_id=google_id,
+                    first_name=given_name,
+                    last_name=family_name,
+                    avatar_url=avatar_url,
+                    role=UserRole.STUDENT,  # default — admin promotes later
+                    is_active=True,
+                    # hashed_password stays NULL — no credential login for this user
+                )
+                self.db.add(user)
+                await self.db.flush()  # get user.id without committing
+                is_new_user = True
+
+                await self._log(
+                    ActionType.ACCOUNT_CREATED,
+                    user_id=str(user.id),
+                    details=f"Auto-created via Google OAuth: {google_email}",
+                    ip=ip_address,
+                )
+
+        # ── Check account is active ───────────────────────────────────────────
+        if not user.is_active:
+            await self._log(
+                ActionType.LOGIN_FAILED,
+                user_id=str(user.id),
+                details="OAuth login attempt on deactivated account",
+                ip=ip_address,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account is deactivated. Contact the administration.",
+            )
+
+        # ── f. Issue OUR JWT tokens ───────────────────────────────────────────
+        # We do NOT use Google's tokens after this point.
+        # We issue our own short-lived access + long-lived refresh tokens.
+        from datetime import datetime, timezone
+
+        user.last_activity = datetime.now(timezone.utc)
+        self.db.add(user)
+
+        token_payload = {"sub": str(user.id), "role": user.role.value}
+        access_token = create_access_token(token_payload)
+        refresh_token = create_refresh_token(token_payload)
+
+        await self._log(
+            ActionType.LOGIN_SUCCESS,
+            user_id=str(user.id),
+            details="Google OAuth login",
+            ip=ip_address,
+        )
+
+        return user, access_token, refresh_token, is_new_user
