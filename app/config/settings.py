@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # ── Session Inactivity ────────────────────────────────────────────────────
     SESSION_INACTIVITY_MINUTES: int = 30
 
+    # ── Environment ───────────────────────────────────────────────────────────
+    ENVIRONMENT: str = "development"  # "development" or "production"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

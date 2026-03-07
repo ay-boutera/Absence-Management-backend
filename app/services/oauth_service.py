@@ -82,7 +82,8 @@ class OAuthService:
     async def _log(
         self,
         action: ActionType,
-        user_id: Optional[str] = None,
+        user_id: Optional[any] = None,
+        resource_id: Optional[str] = None,
         details: Optional[str] = None,
         ip: Optional[str] = None,
     ):
@@ -90,6 +91,7 @@ class OAuthService:
             user_id=user_id,
             action=action,
             resource_type="oauth",
+            resource_id=resource_id,
             details=details,
             ip_address=ip,
         )
@@ -232,7 +234,8 @@ class OAuthService:
 
                 await self._log(
                     ActionType.ACCOUNT_CREATED,
-                    user_id=str(user.id),
+                    user_id=user.id,
+                    resource_id=str(user.id),
                     details=f"Auto-created via Google OAuth: {google_email}",
                     ip=ip_address,
                 )
@@ -241,7 +244,8 @@ class OAuthService:
         if not user.is_active:
             await self._log(
                 ActionType.LOGIN_FAILED,
-                user_id=str(user.id),
+                user_id=user.id,
+                resource_id=str(user.id),
                 details="OAuth login attempt on deactivated account",
                 ip=ip_address,
             )
@@ -264,7 +268,8 @@ class OAuthService:
 
         await self._log(
             ActionType.LOGIN_SUCCESS,
-            user_id=str(user.id),
+            user_id=user.id,
+            resource_id=str(user.id),
             details="Google OAuth login",
             ip=ip_address,
         )

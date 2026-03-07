@@ -45,24 +45,24 @@ class AuthService:
     async def _log(
         self,
         action: ActionType,
-        user_id: Optional[str] = None,
+        user_id: Optional[any] = None,
         resource_type: Optional[str] = None,
-        resource_id: Optional[str] = None,
+        resource_id: Optional[any] = None,
         details: Optional[str] = None,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
     ) -> None:
-        """Write an immutable audit log entry. Called after every significant event."""
         log = AuditLog(
-            user_id=user_id,
+            user_id=str(user_id) if user_id else None,  # ← str()
             action=action,
             resource_type=resource_type,
-            resource_id=resource_id,
+            resource_id=str(resource_id) if resource_id else None,  # ← str()
             details=details,
             ip_address=ip_address,
             user_agent=user_agent,
         )
         self.db.add(log)
+        await self.db.flush()  # ← flush immédiat
         # The actual commit happens when get_db() exits (after the route handler)
 
     # ── FR-01: Login ──────────────────────────────────────────────────────────
@@ -76,8 +76,8 @@ class AuthService:
         Authenticate a user with identifier + password.
 
         The identifier can be:
-          - Email address (for Admin and Teacher)
-          - Student matricule / student_id (for Students)
+            - Email address (for Admin and Teacher)
+            - Student matricule / student_id (for Students)
 
         Returns: (user, access_token, refresh_token)
         Raises: HTTPException 401 on failure
@@ -129,7 +129,7 @@ class AuthService:
         if not user.is_active:
             await self._log(
                 ActionType.LOGIN_FAILED,
-                user_id=str(user.id),
+                user_id=user.id,
                 details="Login attempt on deactivated account",
                 ip_address=ip_address,
             )
@@ -150,9 +150,9 @@ class AuthService:
         # Audit log
         await self._log(
             ActionType.LOGIN_SUCCESS,
-            user_id=str(user.id),
+            user_id=user.id,
             resource_type="user",
-            resource_id=str(user.id),
+            resource_id=user.id,
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -177,7 +177,7 @@ class AuthService:
 
         await self._log(
             ActionType.LOGOUT,
-            user_id=str(user.id),
+            user_id=user.id,
             ip_address=ip_address,
         )
 
@@ -259,7 +259,7 @@ class AuthService:
 
             await self._log(
                 ActionType.PASSWORD_RESET_REQUESTED,
-                user_id=str(user.id),
+                user_id=user.id,
                 ip_address=ip_address,
             )
 
@@ -324,7 +324,7 @@ class AuthService:
 
         await self._log(
             ActionType.PASSWORD_RESET_COMPLETED,
-            user_id=str(user.id),
+            user_id=user.id,
             ip_address=ip_address,
         )
 
@@ -350,6 +350,6 @@ class AuthService:
 
         await self._log(
             ActionType.PASSWORD_CHANGED,
-            user_id=str(user.id),
+            user_id=user.id,
             ip_address=ip_address,
         )

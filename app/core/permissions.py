@@ -36,6 +36,8 @@ from app.core.security import get_token_from_cookie, decode_token, ACCESS_COOKIE
 from app.services.redis_service import RedisService
 from app.config import settings
 
+import uuid
+
 
 # ── Base Dependency: Extract & Validate JWT ────────────────────────────────────
 async def get_current_user(
@@ -82,7 +84,7 @@ async def get_current_user(
         )
 
     # Step 4: Load user from DB
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
 
     if not user:

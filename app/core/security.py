@@ -48,7 +48,7 @@ def hash_password(plain_password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """ Check if a plain-text password matches the stored hash."""
+    """Check if a plain-text password matches the stored hash."""
     return pwd_context.verify(plain_password, hashed_password)
 
 
@@ -146,7 +146,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         key=ACCESS_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        secure=not settings.DEBUG,  # Allow HTTP in dev mode
+        secure=settings.ENVIRONMENT == "production",  # Allow HTTP in dev mode
         samesite="strict",
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
@@ -157,7 +157,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         key=REFRESH_COOKIE_NAME,
         value=refresh_token,
         httponly=True,
-        secure=not settings.DEBUG,
+        secure=settings.ENVIRONMENT == "production",
         samesite="strict",
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         path="/api/v1/auth/refresh",  # Only sent to the refresh endpoint
@@ -168,7 +168,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         key=CSRF_COOKIE_NAME,
         value=csrf_token,
         httponly=False,  # JS MUST be able to read this
-        secure=not settings.DEBUG,
+        secure=settings.ENVIRONMENT == "production",
         samesite="strict",
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
@@ -195,8 +195,8 @@ def validate_csrf_token(request: Request) -> None:
     Double-submit CSRF check.
 
     The client must:
-      1. Read the csrf_token cookie value (JavaScript CAN do this since it's not HttpOnly)
-      2. Send it in the X-CSRF-Token header on every mutating request (POST/PUT/DELETE)
+        1. Read the csrf_token cookie value (JavaScript CAN do this since it's not HttpOnly)
+        2. Send it in the X-CSRF-Token header on every mutating request (POST/PUT/DELETE)
 
     We compare header vs cookie. An attacker's origin cannot read the cookie
     (same-origin policy) so they cannot forge the header.
