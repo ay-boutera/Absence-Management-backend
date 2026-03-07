@@ -99,9 +99,9 @@ async def security_headers(request: Request, call_next):
     # CSP: only allow scripts from self (ENF-08 equivalent)
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: https://fastapi.tiangolo.com; "
         "connect-src 'self';"
     )
     return response
