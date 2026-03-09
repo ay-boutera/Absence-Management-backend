@@ -25,7 +25,7 @@ class AuditLog(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(
-        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     action = Column(SQLAlchemyEnum(ActionType), nullable=False)
 

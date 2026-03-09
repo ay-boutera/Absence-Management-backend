@@ -14,3 +14,11 @@ class UserResponse(BaseModel):
     avatar_url: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    first_name: str
+    last_name: str
+    role: UserRole = UserRole.STUDENT

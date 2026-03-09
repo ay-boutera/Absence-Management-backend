@@ -14,4 +14,5 @@ __all__ = [
     "OAuthStateResponse",
     "OAuthLoginResponse",
     "UserResponse",
+    "UserCreate",
 ]

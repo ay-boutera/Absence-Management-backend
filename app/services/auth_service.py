@@ -20,7 +20,13 @@ from sqlalchemy import select, or_
 from fastapi import HTTPException, status
 
 from app.models import User, PasswordResetToken, UserRole, AuditLog, ActionType
-from app.schemas.auth import LoginRequest, PasswordResetConfirm, ChangePasswordRequest
+from app.schemas import (
+    LoginRequest,
+    PasswordResetConfirm,
+    ChangePasswordRequest,
+    UserCreate,
+)
+
 from app.core.security import (
     verify_password,
     hash_password,
@@ -159,7 +165,57 @@ class AuthService:
 
         return user, access_token, refresh_token
 
+    # ── FR-01: Registration ───────────────────────────────────────────────────
+    async def register(
+        self,
+        data: UserCreate,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> User:
+        """
+        Create a new credential-based user account.
+        1. Validates email domain
+        2. Checks if email is already taken
+        3. Hashes password
+        4. Saves user to DB
+        """
+        validate_esi_email(data.email)
+
+        # 2. Duplicate check
+        result = await self.db.execute(select(User).where(User.email == data.email))
+        if result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email is already registered.",
+            )
+
+        # 3. Create user
+        new_user = User(
+            email=data.email,
+            hashed_password=hash_password(data.password),
+            first_name=data.first_name,
+            last_name=data.last_name,
+            role=data.role,
+            is_active=True,
+        )
+        self.db.add(new_user)
+        await self.db.flush()
+
+        # 4. Audit log
+        await self._log(
+            ActionType.ACCOUNT_CREATED,
+            user_id=new_user.id,
+            resource_type="user",
+            resource_id=new_user.id,
+            details=f"Manual registration: {new_user.email}",
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
+        return new_user
+
     # ── FR-01: Logout ─────────────────────────────────────────────────────────
+
     async def logout(
         self,
         access_token: str,

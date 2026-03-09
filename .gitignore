@@ -37,10 +37,14 @@ venv.bak/
 
 # SQLite
 *.db
-*.sqlite3
+*.sqlite3      
 
 # IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
+data/*.db
+
+# Redis
+redis.conf

@@ -19,11 +19,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # ── Google OAuth2 ──────────────────────────────────────────────────────────
-    # Get these from: https://console.cloud.google.com/apis/credentials
-    # Steps:
-    #   1. Create a project → Enable "Google People API"
-    #   2. OAuth 2.0 Credentials → Web Application
-    #   3. Add Authorized redirect URI:
+    #   Get these from: https://console.cloud.google.com/apis/credentials
+    #   Add Authorized redirect URI:
     #      http://localhost:8000/api/v1/auth/google/callback   (dev)
     #      https://your-domain.com/api/v1/auth/google/callback (prod)
     GOOGLE_CLIENT_ID: str
@@ -31,9 +28,6 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
 
     # ── ESI-SBA Email Domain ───────────────────────────────────────────────────
-    # Both login methods enforce this domain.
-    # Format: firstletter.lastname@esi-sba.dz
-    # Example: i.brahmi@esi-sba.dz  (Ilyes Brahmi)
     ALLOWED_EMAIL_DOMAIN: str = "esi-sba.dz"
 
     # ── Email (password reset for credential users) ────────────────────────────
