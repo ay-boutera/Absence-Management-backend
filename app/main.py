@@ -10,7 +10,7 @@ This is where the app is assembled:
 
 Run with:
     uvicorn app.main:app --reload
-    http://localhost:8000/api/v1/docs ( hna talgo documentation ).
+    http://localhost:8000/api/v1/docs ( hna talgo documentation b3d ma diro run l server b3dha dir run l frontend ).
 """
 
 from contextlib import asynccontextmanager
