@@ -27,14 +27,14 @@ from app.schemas import (
     UserCreate,
 )
 
-from app.core.security import (
+from app.helpers.security import (
     verify_password,
     hash_password,
     create_access_token,
     create_refresh_token,
     decode_token,
 )
-from app.core.email_validator import validate_esi_email
+from app.helpers.email import validate_esi_email
 from app.services.redis_service import RedisService
 from app.services.email_service import send_password_reset_email
 from app.config import settings

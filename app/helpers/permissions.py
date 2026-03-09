@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.db import get_db
 from app.models.user import User, UserRole
-from app.core.security import get_token_from_cookie, decode_token, ACCESS_COOKIE_NAME
+from app.helpers.security import get_token_from_cookie, decode_token, ACCESS_COOKIE_NAME
 from app.services.redis_service import RedisService
 from app.config import settings
 

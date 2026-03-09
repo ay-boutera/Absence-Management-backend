@@ -47,7 +47,7 @@ from app.schemas import (
 )
 from app.services.auth_service import AuthService
 from app.services.oauth_service import OAuthService
-from app.core.security import (
+from app.helpers.security import (
     set_auth_cookies,
     clear_auth_cookies,
     get_token_from_cookie,
@@ -55,18 +55,15 @@ from app.core.security import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
 )
-from app.core.permissions import require_active_user
+from app.helpers.permissions import require_active_user
+from app.helpers.request import get_client_ip
 from app.models.user import User
 from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-def get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+# Helper functions moved to app.helpers.request
 
 
 # ══════════════════════════════════════════════════════════════════════════════

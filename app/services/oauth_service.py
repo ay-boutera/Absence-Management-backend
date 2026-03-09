@@ -42,8 +42,8 @@ from fastapi import HTTPException, status
 
 from app.models.user import User, UserRole
 from app.models.audit_log import AuditLog, ActionType
-from app.core.email_validator import validate_esi_email, extract_name_hint_from_email
-from app.core.security import create_access_token, create_refresh_token
+from app.helpers.email import validate_esi_email, extract_name_hint_from_email
+from app.helpers.security import create_access_token, create_refresh_token
 from app.services.redis_service import RedisService
 from app.config import settings
 

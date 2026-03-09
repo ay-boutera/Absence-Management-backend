@@ -5,7 +5,7 @@ from typing import List
 from app.db import get_db
 from app.models.user import User
 from app.schemas.user import UserResponse, UserCreate
-from app.core.permissions import require_active_user, require_role
+from app.helpers.permissions import require_active_user, require_role
 from app.config import UserRole
 from sqlalchemy import select
 from app.services.auth_service import AuthService
