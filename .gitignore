@@ -27,7 +27,6 @@ share/python-wheels/
 MANIFEST
 
 # Environments
-.env
 .venv
 env/
 venv/
@@ -48,3 +47,6 @@ data/*.db
 
 # Redis
 redis.conf
+
+# Env
+.env
