@@ -39,6 +39,38 @@ async def get_users(
     return result.scalars().all()
 
 
+@router.get("/students", response_model=List[UserResponse])
+async def get_students(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """
+    List all students (Admin only).
+
+    Returns every user whose role is ``UserRole.STUDENT``.
+    """
+    result = await db.execute(
+        select(User).where(User.role == UserRole.STUDENT)
+    )
+    return result.scalars().all()
+
+
+@router.get("/teachers", response_model=List[UserResponse])
+async def get_teachers(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """
+    List all teachers (Admin only).
+
+    Returns every user whose role is ``UserRole.TEACHER``.
+    """
+    result = await db.execute(
+        select(User).where(User.role == UserRole.TEACHER)
+    )
+    return result.scalars().all()
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(require_active_user)):
     """Get current user profile."""

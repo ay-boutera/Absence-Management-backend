@@ -8,7 +8,18 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.db.database import Base
-from app.models import User, StudentProfile, PasswordResetToken, AuditLog
+from app.models import (
+    Absence,
+    AuditLog,
+    ImportHistory,
+    Module,
+    PasswordResetToken,
+    PlanningSession,
+    Salle,
+    Student,
+    StudentProfile,
+    User,
+)
 
 config = context.config
 

@@ -2,6 +2,7 @@
 
 from .auth import *
 from .user import *
+from .import_export import *
 
 __all__ = [
     "LoginRequest",
@@ -15,4 +16,6 @@ __all__ = [
     "OAuthLoginResponse",
     "UserResponse",
     "UserCreate",
+    "ImportErrorItem",
+    "ImportResponse",
 ]

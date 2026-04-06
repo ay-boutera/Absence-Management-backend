@@ -31,7 +31,6 @@ Frontend flow for OAuth:
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.db import get_db
 from app.schemas import (
     LoginRequest,
@@ -61,9 +60,6 @@ from app.models.user import User
 from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
-
-
-# Helper functions moved to app.helpers.request
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -272,16 +268,16 @@ async def google_callback(
     Step 2 of the Google OAuth flow — Google redirects here with ?code=&state=
 
     What happens:
-      1. Validates state against Redis (CSRF check)
-      2. Exchanges code for Google tokens
-      3. Fetches Google profile, validates email is @esi-sba.dz
-      4. Finds or creates the user in our DB
-      5. Issues our own JWT tokens, sets HttpOnly cookies
-      6. Redirects the browser to the React frontend dashboard
+        1. Validates state against Redis (CSRF check)
+        2. Exchanges code for Google tokens
+        3. Fetches Google profile, validates email is @esi-sba.dz
+        4. Finds or creates the user in our DB
+        5. Issues our own JWT tokens, sets HttpOnly cookies
+        6. Redirects the browser to the React frontend dashboard
 
     The redirect carries a query param for the frontend:
-      ?new=true  → first-time login (show welcome message)
-      ?new=false → returning user
+        ?new=true  → first-time login (show welcome message)
+        ?new=false → returning user
 
     This is a browser redirect (not a JSON API call), so the response
     is a 302 RedirectResponse, not JSON.
@@ -294,7 +290,9 @@ async def google_callback(
     )
 
     # Build redirect response to the frontend
-    redirect_url = f"{settings.FRONTEND_URL}/dashboard?new={str(is_new_user).lower()}"
+    redirect_url = (
+        f"{settings.FRONTEND_URL}/{user.role.value}?new={str(is_new_user).lower()}"
+    )
     redirect_response = RedirectResponse(url=redirect_url, status_code=302)
 
     # Set auth cookies ON the redirect response (not on 'response')

@@ -24,7 +24,7 @@ from slowapi.errors import RateLimitExceeded
 from app.middlewares.security import security_headers
 from app.config import settings
 from app.db import engine, Base
-from app.routers import auth, users
+from app.routers import auth, import_export, users
 
 
 # ── Rate Limiter ──────────────────────────────────────────────────────────────
@@ -93,6 +93,7 @@ app.middleware("http")(security_headers)
 # All routes are prefixed with /api/v1 for versioning.
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
+app.include_router(import_export.router, prefix="/api/v1")
 
 
 # ── Health Check ─────────────────────────────────────────────────────────────
