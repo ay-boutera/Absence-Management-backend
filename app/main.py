@@ -76,13 +76,20 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # CORS controls which origins (frontend URLs) are allowed to call this API.
 # allow_credentials=True is REQUIRED when using cookies.
 # Without it, the browser will refuse to send cookies cross-origin.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL],  # e.g., "http://localhost:5173"
-    allow_credentials=True,  # REQUIRED for HttpOnly cookies
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-CSRF-Token"],  # Must allow X-CSRF-Token
-)
+cors_kwargs = {
+    "allow_credentials": True,  # REQUIRED for HttpOnly cookies
+    "allow_methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    "allow_headers": ["Content-Type", "X-CSRF-Token", "Authorization"],
+}
+
+if settings.CORS_ALLOW_ALL:
+    # Allow any frontend origin while still supporting credentials.
+    cors_kwargs["allow_origins"] = []
+    cors_kwargs["allow_origin_regex"] = ".*"
+else:
+    cors_kwargs["allow_origins"] = [settings.FRONTEND_URL]  # e.g., http://localhost:5173
+
+app.add_middleware(CORSMiddleware, **cors_kwargs)
 
 
 # ── Security Headers Middleware ───────────────────────────────────────────────

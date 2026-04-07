@@ -8,25 +8,16 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.db.database import Base
-from app.models import (
-    Absence,
-    AuditLog,
-    ImportHistory,
-    Module,
-    PasswordResetToken,
-    PlanningSession,
-    Salle,
-    Student,
-    StudentProfile,
-    User,
-)
+from app import models as _models  # noqa: F401
 
 config = context.config
 
-# Convertir asyncpg → psycopg2 pour Alembic (sync)
-db_url = os.getenv("DATABASE_URL", "").replace(
-    "postgresql+asyncpg", "postgresql+psycopg2"
-)
+# Convert async drivers to sync drivers for Alembic.
+db_url = os.getenv("DATABASE_URL", "")
+if db_url.startswith("postgresql+asyncpg"):
+    db_url = db_url.replace("postgresql+asyncpg", "postgresql+psycopg2", 1)
+elif db_url.startswith("sqlite+aiosqlite"):
+    db_url = db_url.replace("sqlite+aiosqlite", "sqlite", 1)
 config.set_main_option("sqlalchemy.url", db_url)
 
 if config.config_file_name is not None:

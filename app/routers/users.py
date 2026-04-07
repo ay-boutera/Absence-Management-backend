@@ -5,17 +5,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 
 from app.db import get_db
-from app.models.user import Account
+from app.models.user import Account, Admin
 from app.schemas.user import (
     AccountCreate,
     AccountResponse,
     AccountStatusUpdate,
-    AccountUpdate,
+    AdminAccountUpdate,
     AdminAccountCreate,
+    StudentAccountUpdate,
     StudentAccountCreate,
+    TeacherAccountUpdate,
     TeacherAccountCreate,
 )
-from app.helpers.permissions import require_active_user, require_role
+from app.helpers.permissions import require_active_user, require_role, require_super_admin
 from app.config import UserRole
 from sqlalchemy import select
 from app.services.auth_service import AuthService
@@ -24,20 +26,36 @@ router = APIRouter(prefix="/accounts", tags=["Accounts"])
 
 
 @router.post(
-    "/",
+    "/super-admins",
     response_model=AccountResponse,
     status_code=201,
-    summary="Create Account (Generic)",
+    summary="Create initial Super Admin (Bootstrap)",
 )
-async def create_account(
-    data: AccountCreate,
+async def create_super_admin_account(
+    data: AdminAccountCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new account (Public for testing)."""
+    """
+    Bootstrap endpoint to create the first super admin.
+    Public by design, but only allowed while no super admin exists.
+    """
+    existing_super_admin = await db.execute(
+        select(Admin.id).where(Admin.admin_level == "super").limit(1)
+    )
+    if existing_super_admin.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super admin already exists.",
+        )
+
     service = AuthService(db)
     account = await service.register(
-        data=data,
+        data=AccountCreate(
+            role=UserRole.ADMIN,
+            admin_level="super",
+            **data.model_dump(exclude={"admin_level"}),
+        ),
         ip_address=request.client.host if request.client else "unknown",
         user_agent=request.headers.get("user-agent"),
     )
@@ -98,12 +116,16 @@ async def create_admin_account(
     data: AdminAccountCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Account = Depends(require_role(UserRole.ADMIN)),
+    current_user: Account = Depends(require_super_admin),
 ):
-    """Create an admin account (Admin only)."""
+    """Create a regular admin account (Super Admin only)."""
     service = AuthService(db)
     account = await service.register(
-        data=AccountCreate(role=UserRole.ADMIN, **data.model_dump()),
+        data=AccountCreate(
+            role=UserRole.ADMIN,
+            admin_level="regular",
+            **data.model_dump(exclude={"admin_level"}),
+        ),
         ip_address=request.client.host if request.client else "unknown",
         user_agent=request.headers.get("user-agent"),
     )
@@ -188,19 +210,51 @@ async def get_account_by_id(
 
 
 @router.patch(
-    "/{account_id}",
+    "/students/{account_id}",
     response_model=AccountResponse,
-    summary="Update Account",
+    summary="Update Student Account",
 )
-async def update_account(
+async def update_student_account(
     account_id: UUID,
-    data: AccountUpdate,
+    data: StudentAccountUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: Account = Depends(require_role(UserRole.ADMIN)),
 ):
-    """Update account fields and role profile fields (Admin only)."""
+    """Update a student account and student profile fields (Admin only)."""
     service = AuthService(db)
-    return await service.update_account(account_id, data)
+    return await service.update_student_account(account_id, data)
+
+
+@router.patch(
+    "/teachers/{account_id}",
+    response_model=AccountResponse,
+    summary="Update Teacher Account",
+)
+async def update_teacher_account(
+    account_id: UUID,
+    data: TeacherAccountUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Account = Depends(require_role(UserRole.ADMIN)),
+):
+    """Update a teacher account and teacher profile fields (Admin only)."""
+    service = AuthService(db)
+    return await service.update_teacher_account(account_id, data)
+
+
+@router.patch(
+    "/admins/{account_id}",
+    response_model=AccountResponse,
+    summary="Update Admin Account",
+)
+async def update_admin_account(
+    account_id: UUID,
+    data: AdminAccountUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Account = Depends(require_role(UserRole.ADMIN)),
+):
+    """Update an admin account and admin profile fields (Admin only)."""
+    service = AuthService(db)
+    return await service.update_admin_account(account_id, data)
 
 
 @router.patch(

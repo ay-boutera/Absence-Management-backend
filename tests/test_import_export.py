@@ -4,13 +4,21 @@ from datetime import date, time
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db import Base, get_db
 from app.helpers.security import create_access_token
 from app.main import app
-from app.models.academic import Absence, Module, PlanningSession, Salle, SessionType, Student
-from app.models.user import Account, UserRole
+from app.models.academic import (
+    Absence,
+    Module,
+    PlanningSession,
+    Salle,
+    SessionType,
+    Student as AcademicStudent,
+)
+from app.models.user import Account, Student as StudentProfile, UserRole
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 test_engine = create_async_engine(TEST_DB_URL, echo=False)
@@ -108,7 +116,9 @@ def bearer_headers(user: Account) -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_import_students_partial_success(client: AsyncClient, admin_user: Account):
+async def test_import_students_atomic_rejects_on_any_invalid_row(
+    client: AsyncClient, admin_user: Account
+):
     csv_content = (
         "matricule,nom,prenom,filiere,niveau,groupe,email\n"
         "ST001,Doe,John,INFO,L3,G1,john.doe@esi-sba.dz\n"
@@ -122,13 +132,69 @@ async def test_import_students_partial_success(client: AsyncClient, admin_user: 
         headers=bearer_headers(admin_user),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 400
     data = response.json()
-    assert data["imported"] == 2
+    assert data["imported"] == 0
     assert data["errors"] == 1
     assert len(data["error_report"]) == 1
     assert data["error_report"][0]["field"] == "email"
-    assert data["history_id"]
+    assert data["error_report"][0]["line"] == 3
+    assert data["error_report"][0]["row_data"]["matricule"] == "ST002"
+
+    async with TestSessionLocal() as session:
+        result = await session.execute(
+            select(AcademicStudent).where(
+                AcademicStudent.matricule.in_(["ST001", "ST002", "ST003"])
+            )
+        )
+        assert result.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_import_students_with_access_cookie(client: AsyncClient, admin_user: Account):
+    csv_content = (
+        "matricule,nom,prenom,filiere,niveau,groupe,email\n"
+        "ST010,Cookie,Admin,INFO,L3,G1,cookie.admin@esi-sba.dz\n"
+    )
+    token = create_access_token({"sub": str(admin_user.id), "role": admin_user.role.value})
+    client.cookies.set("access_token", token)
+
+    response = await client.post(
+        "/api/v1/import/students",
+        files={"file": ("students.csv", csv_content, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["imported"] == 1
+    assert data["errors"] == 0
+
+    async with TestSessionLocal() as session:
+        academic_result = await session.execute(
+            select(AcademicStudent).where(AcademicStudent.matricule == "ST010")
+        )
+        academic_student = academic_result.scalar_one_or_none()
+        assert academic_student is not None
+        assert academic_student.email == "cookie.admin@esi-sba.dz"
+
+        account_result = await session.execute(
+            select(Account).where(Account.email == "cookie.admin@esi-sba.dz")
+        )
+        imported_account = account_result.scalar_one_or_none()
+        assert imported_account is not None
+        assert imported_account.role == UserRole.STUDENT
+        assert imported_account.first_name == "Admin"
+        assert imported_account.last_name == "Cookie"
+
+        profile_result = await session.execute(
+            select(StudentProfile).where(StudentProfile.user_id == imported_account.id)
+        )
+        imported_profile = profile_result.scalar_one_or_none()
+        assert imported_profile is not None
+        assert imported_profile.student_id == "ST010"
+        assert imported_profile.program == "INFO"
+        assert imported_profile.level == "L3"
+        assert imported_profile.group == "G1"
 
 
 @pytest.mark.asyncio
@@ -182,7 +248,7 @@ async def test_export_absences_admin_and_teacher_scope(
     other_teacher_user: Account,
 ):
     async with TestSessionLocal() as session:
-        student_one = Student(
+        student_one = AcademicStudent(
             matricule="ST100",
             nom="Alpha",
             prenom="One",
@@ -191,7 +257,7 @@ async def test_export_absences_admin_and_teacher_scope(
             groupe="G1",
             email="alpha.one@esi-sba.dz",
         )
-        student_two = Student(
+        student_two = AcademicStudent(
             matricule="ST200",
             nom="Beta",
             prenom="Two",

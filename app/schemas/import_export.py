@@ -6,6 +6,7 @@ class ImportErrorItem(BaseModel):
     line: int = Field(..., example=5)
     field: str = Field(..., example="email")
     reason: str = Field(..., example="Invalid email format")
+    row_data: dict[str, str] = Field(default_factory=dict)
 
 
 class ImportResponse(BaseModel):

@@ -149,6 +149,33 @@ async def require_admin(
     return current_user
 
 
+async def require_super_admin(
+    current_user: Account = Depends(require_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Account:
+    """
+    Only super-admin accounts can access routes protected by this dependency.
+    Super admin is represented by admin_profile.admin_level == "super".
+    """
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Administrator role required.",
+        )
+
+    admin_result = await db.execute(select(Admin).where(Admin.user_id == current_user.id))
+    admin_profile = admin_result.scalar_one_or_none()
+    admin_level = (admin_profile.admin_level if admin_profile else "regular") or "regular"
+
+    if admin_level.lower() != "super":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Super admin role required.",
+        )
+
+    return current_user
+
+
 async def require_teacher(
     current_user: Account = Depends(require_active_user),
 ) -> Account:
@@ -208,24 +235,29 @@ async def get_current_user_bearer(
     db: AsyncSession = Depends(get_db),
 ) -> Account:
     """
-    Bearer-based auth dependency.
-    Expects Authorization: Bearer <access_token>
+    Auth dependency for endpoints primarily documented with Bearer tokens.
+    Supports either:
+      - Authorization: Bearer <access_token>
+      - access_token cookie fallback (for cookie-based sessions)
     """
     authorization = request.headers.get("Authorization")
-    if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Authorization header.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Authorization header format.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    token = ""
+    if authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Authorization header format.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    else:
+        token = get_token_from_cookie(request, ACCESS_COOKIE_NAME) or ""
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing Authorization header.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     payload = decode_token(token)
     token_role = payload.get("role")

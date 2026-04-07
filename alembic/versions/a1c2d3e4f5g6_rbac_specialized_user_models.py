@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -18,14 +19,26 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-import_export_action_enum = sa.Enum("IMPORT", "EXPORT", name="importexportaction")
-import_export_file_type_enum = sa.Enum("CSV", "PDF", "EXCEL", name="importexportfiletype")
-import_export_data_type_enum = sa.Enum(
+import_export_action_enum = postgresql.ENUM(
+    "IMPORT",
+    "EXPORT",
+    name="importexportaction",
+    create_type=False,
+)
+import_export_file_type_enum = postgresql.ENUM(
+    "CSV",
+    "PDF",
+    "EXCEL",
+    name="importexportfiletype",
+    create_type=False,
+)
+import_export_data_type_enum = postgresql.ENUM(
     "STUDENTS",
     "ATTENDANCE",
     "SCHEDULE",
     "JUSTIFICATIONS",
     name="importexportdatatype",
+    create_type=False,
 )
 
 

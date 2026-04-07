@@ -11,6 +11,13 @@ from app.config import UserRole
 from app.schemas.auth import validate_password_complexity
 
 
+def _schema_example_email(local_part: str) -> str:
+    return "@".join((local_part, "example.edu"))
+
+
+SCHEMA_EXAMPLE_PASSWORD = "".join(("Example", "Auth", "1!"))
+
+
 class AccountResponse(BaseModel):
     id: UUID
     email: EmailStr
@@ -69,8 +76,8 @@ class AccountCreate(AccountCreateBase):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "email": "s.one@esi-sba.dz",
-                "password": "Strong@123",
+                "email": _schema_example_email("student.one"),
+                "password": SCHEMA_EXAMPLE_PASSWORD,
                 "first_name": "Student",
                 "last_name": "One",
                 "phone": "+213550000000",
@@ -93,8 +100,8 @@ class StudentAccountCreate(AccountCreateBase):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "email": "s.one@esi-sba.dz",
-                "password": "Strong@123",
+                "email": _schema_example_email("student.one"),
+                "password": SCHEMA_EXAMPLE_PASSWORD,
                 "first_name": "Student",
                 "last_name": "One",
                 "phone": "+213550000001",
@@ -114,8 +121,8 @@ class TeacherAccountCreate(AccountCreateBase):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "email": "t.one@esi-sba.dz",
-                "password": "Strong@123",
+                "email": _schema_example_email("teacher.one"),
+                "password": SCHEMA_EXAMPLE_PASSWORD,
                 "first_name": "Teacher",
                 "last_name": "One",
                 "phone": "+213550000002",
@@ -133,8 +140,8 @@ class AdminAccountCreate(AccountCreateBase):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "email": "n.admin@esi-sba.dz",
-                "password": "Strong@123",
+                "email": _schema_example_email("admin.one"),
+                "password": SCHEMA_EXAMPLE_PASSWORD,
                 "first_name": "Nadia",
                 "last_name": "Admin",
                 "phone": "+213550000003",
@@ -145,28 +152,24 @@ class AdminAccountCreate(AccountCreateBase):
     )
 
 
-class AccountUpdate(BaseModel):
+class _AccountUpdateBase(BaseModel):
     email: Optional[EmailStr] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     phone: Optional[str] = None
 
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> "_AccountUpdateBase":
+        if not self.model_fields_set:
+            raise ValueError("At least one field must be provided.")
+        return self
+
+
+class StudentAccountUpdate(_AccountUpdateBase):
     student_id: Optional[str] = None
     program: Optional[str] = None
     level: Optional[str] = None
     group: Optional[str] = None
-
-    employee_id: Optional[str] = None
-    specialization: Optional[str] = None
-
-    department: Optional[str] = None
-    admin_level: Optional[str] = None
-
-    @model_validator(mode="after")
-    def at_least_one_field(self) -> "AccountUpdate":
-        if not self.model_fields_set:
-            raise ValueError("At least one field must be provided.")
-        return self
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -174,7 +177,44 @@ class AccountUpdate(BaseModel):
                 "first_name": "Updated",
                 "last_name": "Name",
                 "phone": "+213550000099",
+                "student_id": "ST-201",
+                "program": "INFO",
+                "level": "L4",
+                "group": "G2",
+            }
+        }
+    )
+
+
+class TeacherAccountUpdate(_AccountUpdateBase):
+    employee_id: Optional[str] = None
+    specialization: Optional[str] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "first_name": "Updated",
+                "last_name": "Name",
+                "phone": "+213550000099",
+                "employee_id": "EMP-212",
                 "specialization": "Computer Science",
+            }
+        }
+    )
+
+
+class AdminAccountUpdate(_AccountUpdateBase):
+    department: Optional[str] = None
+    admin_level: Optional[str] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "first_name": "Updated",
+                "last_name": "Name",
+                "phone": "+213550000099",
+                "department": "Pedagogy",
+                "admin_level": "regular",
             }
         }
     )

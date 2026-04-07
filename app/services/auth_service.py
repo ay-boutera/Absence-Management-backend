@@ -23,11 +23,13 @@ from fastapi import HTTPException, status
 from app.models import Account, PasswordResetToken, UserRole, AuditLog, ActionType
 from app.models.user import Admin, Teacher, Student
 from app.schemas import (
+    AdminAccountUpdate,
     AccountCreate,
-    AccountUpdate,
     ChangePasswordRequest,
     LoginRequest,
     PasswordResetConfirm,
+    StudentAccountUpdate,
+    TeacherAccountUpdate,
 )
 
 from app.helpers.security import (
@@ -61,17 +63,27 @@ class AuthService:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
     ) -> None:
+        normalized_user_id: Optional[UUID] = None
+        if user_id is not None:
+            if isinstance(user_id, UUID):
+                normalized_user_id = user_id
+            else:
+                try:
+                    normalized_user_id = UUID(str(user_id))
+                except ValueError:
+                    normalized_user_id = None
+
         log = AuditLog(
-            user_id=str(user_id) if user_id else None,  # ← str()
+            user_id=normalized_user_id,
             action=action,
             resource_type=resource_type,
-            resource_id=str(resource_id) if resource_id else None,  # ← str()
+            resource_id=str(resource_id) if resource_id else None,
             details=details,
             ip_address=ip_address,
             user_agent=user_agent,
         )
         self.db.add(log)
-        await self.db.flush()  # ← flush immédiat
+        await self.db.flush()
         # The actual commit happens when get_db() exits (after the route handler)
 
     # ── FR-01: Login ──────────────────────────────────────────────────────────
@@ -276,10 +288,7 @@ class AuthService:
             )
         return account
 
-    async def update_account(self, account_id: UUID, data: AccountUpdate) -> Account:
-        account = await self.get_account_by_id(account_id)
-        payload = data.model_dump(exclude_unset=True)
-
+    async def _apply_common_account_updates(self, account: Account, payload: dict) -> None:
         if "email" in payload:
             if not payload["email"]:
                 raise HTTPException(
@@ -314,158 +323,176 @@ class AuthService:
             phone = payload["phone"]
             account.phone = None if phone is None else str(phone).strip() or None
 
-        student_fields = {"student_id", "program", "level", "group"} & payload.keys()
-        if student_fields:
-            if account.role != UserRole.STUDENT:
+    async def update_student_account(
+        self, account_id: UUID, data: StudentAccountUpdate
+    ) -> Account:
+        account = await self.get_account_by_id(account_id)
+        if account.role != UserRole.STUDENT:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Target account is not a student account.",
+            )
+
+        payload = data.model_dump(exclude_unset=True)
+        await self._apply_common_account_updates(account, payload)
+
+        student_result = await self.db.execute(
+            select(Student).where(Student.user_id == account.id)
+        )
+        student_profile = student_result.scalar_one_or_none()
+        if student_profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Student profile not found for this account.",
+            )
+
+        for required_field in ("student_id", "program", "level"):
+            if required_field in payload and (
+                payload[required_field] is None
+                or not str(payload[required_field]).strip()
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Student profile fields can only be updated for student accounts.",
+                    detail=f"{required_field} cannot be empty.",
                 )
 
-            student_result = await self.db.execute(
-                select(Student).where(Student.user_id == account.id)
+        new_student_id = (
+            str(payload["student_id"]).strip()
+            if "student_id" in payload and payload["student_id"] is not None
+            else None
+        )
+        if new_student_id and new_student_id != student_profile.student_id:
+            duplicate_student = await self.db.execute(
+                select(Student).where(
+                    and_(
+                        Student.student_id == new_student_id,
+                        Student.user_id != account.id,
+                    )
+                )
             )
-            student_profile = student_result.scalar_one_or_none()
-            if student_profile is None:
+            if duplicate_student.scalar_one_or_none():
                 raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Student profile not found for this account.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Student ID is already registered.",
                 )
 
-            for required_field in ("student_id", "program", "level"):
-                if required_field in payload and (
-                    payload[required_field] is None
-                    or not str(payload[required_field]).strip()
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"{required_field} cannot be empty.",
-                    )
+        student_fields = {"student_id", "program", "level", "group"} & payload.keys()
+        for field in student_fields:
+            value = payload[field]
+            if isinstance(value, str):
+                value = value.strip() or None
+            setattr(student_profile, field, value)
 
-            new_student_id = (
-                str(payload["student_id"]).strip()
-                if "student_id" in payload and payload["student_id"] is not None
-                else None
+        self.db.add(student_profile)
+        self.db.add(account)
+        await self.db.flush()
+        return account
+
+    async def update_teacher_account(
+        self, account_id: UUID, data: TeacherAccountUpdate
+    ) -> Account:
+        account = await self.get_account_by_id(account_id)
+        if account.role != UserRole.TEACHER:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Target account is not a teacher account.",
             )
 
-            if (
-                new_student_id
-                and new_student_id != student_profile.student_id
-            ):
-                duplicate_student = await self.db.execute(
-                    select(Student).where(
-                        and_(
-                            Student.student_id == new_student_id,
-                            Student.user_id != account.id,
-                        )
+        payload = data.model_dump(exclude_unset=True)
+        await self._apply_common_account_updates(account, payload)
+
+        teacher_result = await self.db.execute(
+            select(Teacher).where(Teacher.user_id == account.id)
+        )
+        teacher_profile = teacher_result.scalar_one_or_none()
+        if teacher_profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Teacher profile not found for this account.",
+            )
+
+        if "employee_id" in payload and (
+            payload["employee_id"] is None
+            or not str(payload["employee_id"]).strip()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="employee_id cannot be empty.",
+            )
+
+        new_employee_id = (
+            str(payload["employee_id"]).strip()
+            if "employee_id" in payload and payload["employee_id"] is not None
+            else None
+        )
+        if new_employee_id and new_employee_id != teacher_profile.employee_id:
+            duplicate_teacher = await self.db.execute(
+                select(Teacher).where(
+                    and_(
+                        Teacher.employee_id == new_employee_id,
+                        Teacher.user_id != account.id,
                     )
                 )
-                if duplicate_student.scalar_one_or_none():
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Student ID is already registered.",
-                    )
-
-            for field in student_fields:
-                value = payload[field]
-                if isinstance(value, str):
-                    value = value.strip() or None
-                setattr(student_profile, field, value)
-            self.db.add(student_profile)
+            )
+            if duplicate_teacher.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Employee ID is already registered.",
+                )
 
         teacher_fields = {"employee_id", "specialization"} & payload.keys()
-        if teacher_fields:
-            if account.role != UserRole.TEACHER:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Teacher profile fields can only be updated for teacher accounts.",
-                )
+        for field in teacher_fields:
+            value = payload[field]
+            if isinstance(value, str):
+                value = value.strip() or None
+            setattr(teacher_profile, field, value)
 
-            teacher_result = await self.db.execute(
-                select(Teacher).where(Teacher.user_id == account.id)
+        self.db.add(teacher_profile)
+        self.db.add(account)
+        await self.db.flush()
+        return account
+
+    async def update_admin_account(
+        self, account_id: UUID, data: AdminAccountUpdate
+    ) -> Account:
+        account = await self.get_account_by_id(account_id)
+        if account.role != UserRole.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Target account is not an admin account.",
             )
-            teacher_profile = teacher_result.scalar_one_or_none()
-            if teacher_profile is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Teacher profile not found for this account.",
-                )
 
-            if "employee_id" in payload and (
-                payload["employee_id"] is None
-                or not str(payload["employee_id"]).strip()
+        payload = data.model_dump(exclude_unset=True)
+        await self._apply_common_account_updates(account, payload)
+
+        admin_result = await self.db.execute(
+            select(Admin).where(Admin.user_id == account.id)
+        )
+        admin_profile = admin_result.scalar_one_or_none()
+        if admin_profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Admin profile not found for this account.",
+            )
+
+        for required_field in ("department", "admin_level"):
+            if required_field in payload and (
+                payload[required_field] is None
+                or not str(payload[required_field]).strip()
             ):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="employee_id cannot be empty.",
+                    detail=f"{required_field} cannot be empty.",
                 )
-
-            new_employee_id = (
-                str(payload["employee_id"]).strip()
-                if "employee_id" in payload and payload["employee_id"] is not None
-                else None
-            )
-
-            if (
-                new_employee_id
-                and new_employee_id != teacher_profile.employee_id
-            ):
-                duplicate_teacher = await self.db.execute(
-                    select(Teacher).where(
-                        and_(
-                            Teacher.employee_id == new_employee_id,
-                            Teacher.user_id != account.id,
-                        )
-                    )
-                )
-                if duplicate_teacher.scalar_one_or_none():
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Employee ID is already registered.",
-                    )
-
-            for field in teacher_fields:
-                value = payload[field]
-                if isinstance(value, str):
-                    value = value.strip() or None
-                setattr(teacher_profile, field, value)
-            self.db.add(teacher_profile)
 
         admin_fields = {"department", "admin_level"} & payload.keys()
-        if admin_fields:
-            if account.role != UserRole.ADMIN:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Admin profile fields can only be updated for admin accounts.",
-                )
+        for field in admin_fields:
+            value = payload[field]
+            if isinstance(value, str):
+                value = value.strip()
+            setattr(admin_profile, field, value)
 
-            admin_result = await self.db.execute(
-                select(Admin).where(Admin.user_id == account.id)
-            )
-            admin_profile = admin_result.scalar_one_or_none()
-            if admin_profile is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Admin profile not found for this account.",
-                )
-
-            for required_field in ("department", "admin_level"):
-                if required_field in payload and (
-                    payload[required_field] is None
-                    or not str(payload[required_field]).strip()
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"{required_field} cannot be empty.",
-                    )
-
-            for field in admin_fields:
-                value = payload[field]
-                if isinstance(value, str):
-                    value = value.strip()
-                setattr(admin_profile, field, value)
-            self.db.add(admin_profile)
-
+        self.db.add(admin_profile)
         self.db.add(account)
         await self.db.flush()
         return account

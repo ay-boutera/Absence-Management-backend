@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -18,8 +19,20 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-session_type_enum = sa.Enum("COURS", "TD", "TP", "EXAMEN", name="sessiontype")
-import_type_enum = sa.Enum("STUDENTS", "PLANNING", name="importtype")
+session_type_enum = postgresql.ENUM(
+    "COURS",
+    "TD",
+    "TP",
+    "EXAMEN",
+    name="sessiontype",
+    create_type=False,
+)
+import_type_enum = postgresql.ENUM(
+    "STUDENTS",
+    "PLANNING",
+    name="importtype",
+    create_type=False,
+)
 
 
 def upgrade() -> None:

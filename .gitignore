@@ -51,3 +51,6 @@ redis.conf
 # Env
 .env
 .env
+.env.render
+
+.codex

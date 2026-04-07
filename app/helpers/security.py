@@ -4,7 +4,7 @@ core/security.py — JWT, Passwords, Cookies, CSRF
 This is the security engine. Every auth operation flows through here.
 
 Three pillars:
-    1. PASSWORD HASHING — bcrypt via passlib. NEVER store plain passwords.
+    1. PASSWORD HASHING — bcrypt. NEVER store plain passwords.
     2. JWT TOKENS — python-jose. Two token types:
         - access_token  (15 min)  : used on every API request
         - refresh_token (7 days)  : used ONLY to get a new access token
@@ -22,12 +22,11 @@ CSRF Protection:
 """
 
 import secrets
-import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from fastapi import Request, HTTPException, status
 from fastapi.responses import Response
 
@@ -35,21 +34,35 @@ from app.config import settings
 
 
 # ── Password Hashing ───────────────────────────────────────────────────────────
-# bcrypt is the gold standard for password hashing.
-# It is intentionally SLOW (making brute-force attacks expensive).
-# schemes=["bcrypt"] means only bcrypt is used.
-# deprecated="auto" means old schemes are automatically migrated on next login.
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt is intentionally slow to make brute-force attacks expensive.
+# bcrypt only processes the first 72 bytes of a password.
+# We reject longer passwords instead of silently truncating.
+_BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
 def hash_password(plain_password: str) -> str:
     """Convert a plain-text password to a bcrypt hash for storage."""
-    return pwd_context.hash(plain_password)
+    password_bytes = plain_password.encode("utf-8")
+    if len(password_bytes) > _BCRYPT_MAX_PASSWORD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password is too long. Maximum supported length is 72 bytes.",
+        )
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Check if a plain-text password matches the stored hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    if not hashed_password:
+        return False
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8"),
+            hashed_password.encode("utf-8"),
+        )
+    except ValueError:
+        # Invalid hash format should be treated as a failed check.
+        return False
 
 
 # ── JWT Token Creation ─────────────────────────────────────────────────────────

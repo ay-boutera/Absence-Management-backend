@@ -39,6 +39,10 @@ def mock_redis():
     )
 
 
+def fixture_password(role: str, index: int) -> str:
+    return f"{role.title()}Fixture{index}!"
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
     required_tables = [
@@ -88,6 +92,40 @@ async def admin_user():
             is_active=True,
         )
         session.add(user)
+        await session.flush()
+        session.add(
+            Admin(
+                user_id=user.id,
+                department="Administration",
+                admin_level="super",
+            )
+        )
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
+@pytest_asyncio.fixture
+async def regular_admin_user():
+    async with TestSessionLocal() as session:
+        user = Account(
+            id=uuid.uuid4(),
+            first_name="Regular",
+            last_name="Admin",
+            email="r.admin@esi-sba.dz",
+            hashed_password=hash_password("Regular@1234"),
+            role=UserRole.ADMIN,
+            is_active=True,
+        )
+        session.add(user)
+        await session.flush()
+        session.add(
+            Admin(
+                user_id=user.id,
+                department="Administration",
+                admin_level="regular",
+            )
+        )
         await session.commit()
         await session.refresh(user)
         return user
@@ -117,6 +155,48 @@ async def login(client: AsyncClient, identifier: str, password: str) -> None:
         json={"identifier": identifier, "password": password},
     )
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_create_first_super_admin_public_success(client: AsyncClient):
+    response = await client.post(
+        "/api/v1/accounts/super-admins",
+        json={
+            "email": "first.super@esi-sba.dz",
+            "password": "Super@1234",
+            "first_name": "First",
+            "last_name": "Super",
+            "department": "Administration",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["role"] == "admin"
+
+    async with TestSessionLocal() as session:
+        result = await session.execute(
+            select(Admin).where(Admin.user_id == uuid.UUID(payload["id"]))
+        )
+        created_profile = result.scalar_one_or_none()
+        assert created_profile is not None
+        assert created_profile.admin_level == "super"
+
+
+@pytest.mark.asyncio
+async def test_create_super_admin_blocked_when_one_exists(client: AsyncClient, admin_user: Account):
+    response = await client.post(
+        "/api/v1/accounts/super-admins",
+        json={
+            "email": "second.super@esi-sba.dz",
+            "password": "Super@1234",
+            "first_name": "Second",
+            "last_name": "Super",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Super admin already exists."
 
 
 @pytest.mark.asyncio
@@ -186,7 +266,7 @@ async def test_create_admin_account_success(client: AsyncClient, admin_user: Acc
             "/api/v1/accounts/admins",
             json={
                 "email": "n.admin@esi-sba.dz",
-                "password": "Admin2@123",
+                "password": fixture_password("admin", 2),
                 "first_name": "New",
                 "last_name": "Admin",
                 "department": "Pedagogy",
@@ -198,6 +278,26 @@ async def test_create_admin_account_success(client: AsyncClient, admin_user: Acc
     payload = response.json()
     assert payload["role"] == "admin"
     assert payload["email"] == "n.admin@esi-sba.dz"
+
+
+@pytest.mark.asyncio
+async def test_regular_admin_cannot_create_admin(
+    client: AsyncClient, regular_admin_user: Account
+):
+    await login(client, "r.admin@esi-sba.dz", "Regular@1234")
+
+    with mock_redis():
+        response = await client.post(
+            "/api/v1/accounts/admins",
+            json={
+                "email": "denied.admin@esi-sba.dz",
+                "password": fixture_password("admin", 3),
+                "first_name": "Denied",
+                "last_name": "Admin",
+            },
+        )
+
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -328,7 +428,7 @@ async def test_update_teacher_account_success(client: AsyncClient, admin_user: A
         teacher_id = create_response.json()["id"]
 
         update_response = await client.patch(
-            f"/api/v1/accounts/{teacher_id}",
+            f"/api/v1/accounts/teachers/{teacher_id}",
             json={
                 "first_name": "UpdatedTeacher",
                 "specialization": "Computer Science",
@@ -360,7 +460,7 @@ async def test_update_account_duplicate_email_returns_400(
             "/api/v1/accounts/admins",
             json={
                 "email": "z.admin@esi-sba.dz",
-                "password": "Admin1@123",
+                "password": fixture_password("admin", 1),
                 "first_name": "Zed",
                 "last_name": "Admin",
             },
@@ -369,7 +469,7 @@ async def test_update_account_duplicate_email_returns_400(
             "/api/v1/accounts/admins",
             json={
                 "email": "y.admin@esi-sba.dz",
-                "password": "Admin2@123",
+                "password": fixture_password("admin", 2),
                 "first_name": "Yas",
                 "last_name": "Admin",
             },
@@ -377,7 +477,7 @@ async def test_update_account_duplicate_email_returns_400(
         second_id = second.json()["id"]
 
         update = await client.patch(
-            f"/api/v1/accounts/{second_id}",
+            f"/api/v1/accounts/admins/{second_id}",
             json={"email": "z.admin@esi-sba.dz"},
         )
 

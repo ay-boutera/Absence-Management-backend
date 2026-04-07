@@ -109,7 +109,7 @@ class OAuthService:
         state = secrets.token_urlsafe(32)
 
         # Store state in Redis — expires in 10 min
-        await self.redis._client.setex(f"{_STATE_PREFIX}{state}", _STATE_TTL, "1")
+        await self.redis.setex(f"{_STATE_PREFIX}{state}", _STATE_TTL, "1")
 
         async with self._make_client() as client:
             url, _ = client.create_authorization_url(
@@ -136,14 +136,14 @@ class OAuthService:
         Raises:  HTTPException on any failure
         """
         # ── a. Validate state (CSRF check for OAuth flow) ─────────────────────
-        stored = await self.redis._client.get(f"{_STATE_PREFIX}{state}")
+        stored = await self.redis.get(f"{_STATE_PREFIX}{state}")
         if not stored:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired OAuth state. Please try logging in again.",
             )
         # Delete immediately — single use
-        await self.redis._client.delete(f"{_STATE_PREFIX}{state}")
+        await self.redis.delete(f"{_STATE_PREFIX}{state}")
 
         # ── b. Exchange code for tokens ───────────────────────────────────────
         async with self._make_client() as client:

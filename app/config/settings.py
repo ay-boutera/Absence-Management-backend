@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # ── Redis (token blacklist) ────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
+    USE_REDIS: bool = True
 
     # ── Google OAuth2 ──────────────────────────────────────────────────────────
     #   Get these from: https://console.cloud.google.com/apis/credentials
@@ -43,6 +44,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "AMS - Absence Management System"
     DEBUG: bool = False
     FRONTEND_URL: str = "http://localhost:5173"
+    CORS_ALLOW_ALL: bool = False
 
     # ── Password Reset Token ───────────────────────────────────────────────────
     RESET_TOKEN_EXPIRE_MINUTES: int = 30
