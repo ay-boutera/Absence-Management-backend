@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum as SQLAlchemyEnum,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Time,
 )
@@ -28,6 +29,24 @@ class SessionType(str, Enum):
 class ImportType(str, Enum):
     STUDENTS = "students"
     PLANNING = "planning"
+
+
+class ImportExportAction(str, Enum):
+    IMPORT = "import"
+    EXPORT = "export"
+
+
+class ImportExportFileType(str, Enum):
+    CSV = "csv"
+    PDF = "pdf"
+    EXCEL = "excel"
+
+
+class ImportExportDataType(str, Enum):
+    STUDENTS = "students"
+    ATTENDANCE = "attendance"
+    SCHEDULE = "schedule"
+    JUSTIFICATIONS = "justifications"
 
 
 class Student(Base):
@@ -147,3 +166,31 @@ class ImportHistory(Base):
     total_rows = Column(Integer, nullable=False)
     success_count = Column(Integer, nullable=False)
     error_count = Column(Integer, nullable=False)
+
+
+class ImportExportLog(Base):
+    __tablename__ = "import_export_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    performed_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    action = Column(SQLAlchemyEnum(ImportExportAction), nullable=False)
+    file_type = Column(SQLAlchemyEnum(ImportExportFileType), nullable=False)
+    file_name = Column(String(255), nullable=False)
+    data_type = Column(SQLAlchemyEnum(ImportExportDataType), nullable=False)
+    row_count = Column(Integer, default=0, nullable=False)
+    success_count = Column(Integer, default=0, nullable=False)
+    error_count = Column(Integer, default=0, nullable=False)
+    error_details = Column(JSON, default=dict, nullable=False)
+    file_path = Column(String(500), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    performed_by = relationship("Account", back_populates="import_export_logs")

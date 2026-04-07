@@ -10,7 +10,7 @@ from app.db import Base, get_db
 from app.helpers.security import create_access_token
 from app.main import app
 from app.models.academic import Absence, Module, PlanningSession, Salle, SessionType, Student
-from app.models.user import User, UserRole
+from app.models.user import Account, UserRole
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 test_engine = create_async_engine(TEST_DB_URL, echo=False)
@@ -51,7 +51,7 @@ async def client():
 @pytest_asyncio.fixture
 async def admin_user():
     async with TestSessionLocal() as session:
-        user = User(
+        user = Account(
             id=uuid.uuid4(),
             first_name="Admin",
             last_name="User",
@@ -69,7 +69,7 @@ async def admin_user():
 @pytest_asyncio.fixture
 async def teacher_user():
     async with TestSessionLocal() as session:
-        user = User(
+        user = Account(
             id=uuid.uuid4(),
             first_name="Teacher",
             last_name="One",
@@ -87,7 +87,7 @@ async def teacher_user():
 @pytest_asyncio.fixture
 async def other_teacher_user():
     async with TestSessionLocal() as session:
-        user = User(
+        user = Account(
             id=uuid.uuid4(),
             first_name="Teacher",
             last_name="Two",
@@ -102,13 +102,13 @@ async def other_teacher_user():
         return user
 
 
-def bearer_headers(user: User) -> dict[str, str]:
+def bearer_headers(user: Account) -> dict[str, str]:
     token = create_access_token({"sub": str(user.id), "role": user.role.value})
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.mark.asyncio
-async def test_import_students_partial_success(client: AsyncClient, admin_user: User):
+async def test_import_students_partial_success(client: AsyncClient, admin_user: Account):
     csv_content = (
         "matricule,nom,prenom,filiere,niveau,groupe,email\n"
         "ST001,Doe,John,INFO,L3,G1,john.doe@esi-sba.dz\n"
@@ -132,7 +132,7 @@ async def test_import_students_partial_success(client: AsyncClient, admin_user: 
 
 
 @pytest.mark.asyncio
-async def test_import_students_forbidden_for_teacher(client: AsyncClient, teacher_user: User):
+async def test_import_students_forbidden_for_teacher(client: AsyncClient, teacher_user: Account):
     csv_content = "matricule,nom,prenom,filiere,niveau,groupe,email\nST001,Doe,John,INFO,L3,G1,john.doe@esi-sba.dz\n"
 
     response = await client.post(
@@ -147,8 +147,8 @@ async def test_import_students_forbidden_for_teacher(client: AsyncClient, teache
 @pytest.mark.asyncio
 async def test_import_planning_with_referential_validation(
     client: AsyncClient,
-    admin_user: User,
-    teacher_user: User,
+    admin_user: Account,
+    teacher_user: Account,
 ):
     async with TestSessionLocal() as session:
         session.add(Module(code="ALG101", nom="Algebra"))
@@ -177,9 +177,9 @@ async def test_import_planning_with_referential_validation(
 @pytest.mark.asyncio
 async def test_export_absences_admin_and_teacher_scope(
     client: AsyncClient,
-    admin_user: User,
-    teacher_user: User,
-    other_teacher_user: User,
+    admin_user: Account,
+    teacher_user: Account,
+    other_teacher_user: Account,
 ):
     async with TestSessionLocal() as session:
         student_one = Student(

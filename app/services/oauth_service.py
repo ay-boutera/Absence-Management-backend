@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from fastapi import HTTPException, status
 
-from app.models.user import User, UserRole
+from app.models.user import Account, UserRole, Student
 from app.models.audit_log import AuditLog, ActionType
 from app.helpers.email import validate_esi_email, extract_name_hint_from_email
 from app.helpers.security import create_access_token, create_refresh_token
@@ -128,7 +128,7 @@ class OAuthService:
         code: str,
         state: str,
         ip_address: Optional[str] = None,
-    ) -> tuple[User, str, str, bool]:
+    ) -> tuple[Account, str, str, bool]:
         """
         Process the OAuth callback from Google.
 
@@ -194,14 +194,14 @@ class OAuthService:
         is_new_user = False
 
         # First: look up by google_id (subsequent logins — fastest path)
-        result = await self.db.execute(select(User).where(User.google_id == google_id))
+        result = await self.db.execute(select(Account).where(Account.google_id == google_id))
         user = result.scalar_one_or_none()
 
         if not user:
             # Second: look up by email (first OAuth login for an existing account)
             # The admin may have pre-created the account before the user logged in.
             result = await self.db.execute(
-                select(User).where(User.email == google_email)
+                select(Account).where(Account.email == google_email)
             )
             user = result.scalar_one_or_none()
 
@@ -218,7 +218,7 @@ class OAuthService:
                     given_name = hint["first_initial"]
                     family_name = hint["last_name"]
 
-                user = User(
+                user = Account(
                     email=google_email,
                     google_id=google_id,
                     first_name=given_name,
@@ -230,6 +230,17 @@ class OAuthService:
                 )
                 self.db.add(user)
                 await self.db.flush()  # get user.id without committing
+
+                self.db.add(
+                    Student(
+                        user_id=user.id,
+                        student_id=f"oauth-{google_id[:12]}",
+                        program="N/A",
+                        level="N/A",
+                        group=None,
+                    )
+                )
+                await self.db.flush()
                 is_new_user = True
 
                 await self._log(

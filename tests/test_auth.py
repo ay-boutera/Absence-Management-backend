@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.main import app
 from app.db import Base, get_db
-from app.models.user import User, UserRole
+from app.models.user import Account, UserRole
 from app.core.security import hash_password
 from fastapi import HTTPException as FastAPIHTTPException
 
@@ -69,7 +69,7 @@ async def admin_user():
     on a string.
     """
     async with TestSessionLocal() as session:
-        user = User(
+        user = Account(
             id=uuid.uuid4(),
             first_name="Admin",
             last_name="User",
@@ -87,7 +87,7 @@ async def admin_user():
 @pytest_asyncio.fixture
 async def teacher_user():
     async with TestSessionLocal() as session:
-        user = User(
+        user = Account(
             id=uuid.uuid4(),
             first_name="Teacher",
             last_name="User",
@@ -105,7 +105,7 @@ async def teacher_user():
 @pytest_asyncio.fixture
 async def inactive_user():
     async with TestSessionLocal() as session:
-        user = User(
+        user = Account(
             id=uuid.uuid4(),
             first_name="Inactive",
             last_name="User",
@@ -272,7 +272,7 @@ class TestRBAC:
 
     @pytest.mark.asyncio
     async def test_unauthenticated_blocked(self, client):
-        response = await client.get("/api/v1/users/")
+        response = await client.get("/api/v1/accounts/")
         assert response.status_code == 401
 
     @pytest.mark.asyncio
@@ -284,7 +284,7 @@ class TestRBAC:
             )
             # Mettre les cookies sur le client directement (pas per-request)
             client.cookies.set("access_token", login.cookies.get("access_token"))
-            response = await client.get("/api/v1/users/")
+            response = await client.get("/api/v1/accounts/")
         assert response.status_code == 403
 
     @pytest.mark.asyncio
@@ -298,7 +298,7 @@ class TestRBAC:
             print("set-cookie:", login.headers.get("set-cookie"))
             print("client cookies after login:", client.cookies)
 
-            response = await client.get("/api/v1/users/")
+            response = await client.get("/api/v1/accounts/")
             print(response.status_code, response.text)
 
         assert response.status_code == 200
@@ -367,7 +367,7 @@ class TestPasswordReset:
         """
         user_id = uuid.uuid4()
         async with TestSessionLocal() as session:
-            oauth_user = User(
+            oauth_user = Account(
                 id=user_id,  # ← explicit UUID object
                 first_name="OAuth",
                 last_name="User",
@@ -461,7 +461,7 @@ class TestGoogleOAuth:
         """
         user_id = uuid.uuid4()
         async with TestSessionLocal() as session:
-            new_user = User(
+            new_user = Account(
                 id=user_id,
                 first_name="Ilyes",
                 last_name="Brahmi",
@@ -503,7 +503,7 @@ class TestGoogleOAuth:
         """
         user_id = uuid.uuid4()
         async with TestSessionLocal() as session:
-            existing = User(
+            existing = Account(
                 id=user_id,
                 first_name="Nour",
                 last_name="Trari",

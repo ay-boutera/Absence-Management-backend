@@ -14,17 +14,20 @@ Why a service layer?
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
+from sqlalchemy import and_, or_, select
 from fastapi import HTTPException, status
 
-from app.models import User, PasswordResetToken, UserRole, AuditLog, ActionType
+from app.models import Account, PasswordResetToken, UserRole, AuditLog, ActionType
+from app.models.user import Admin, Teacher, Student
 from app.schemas import (
+    AccountCreate,
+    AccountUpdate,
+    ChangePasswordRequest,
     LoginRequest,
     PasswordResetConfirm,
-    ChangePasswordRequest,
-    UserCreate,
 )
 
 from app.helpers.security import (
@@ -77,7 +80,7 @@ class AuthService:
         credentials: LoginRequest,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
-    ) -> tuple[User, str, str]:
+    ) -> tuple[Account, str, str]:
         """
         Authenticate a user with identifier + password.
 
@@ -94,17 +97,16 @@ class AuthService:
         if "@" in credentials.identifier:
             validate_esi_email(credentials.identifier)
 
-        # Look up by email OR by student_id (via JOIN with student_profiles)
-        # We do a LEFT JOIN so that a user without a student profile is still found
-        from app.models.user import StudentProfile
+        # Look up by email OR by student_id (via JOIN with specialized student model)
+        # We do a LEFT JOIN so that a non-student user is still found by email.
 
         result = await self.db.execute(
-            select(User)
-            .outerjoin(StudentProfile, User.id == StudentProfile.user_id)
+            select(Account)
+            .outerjoin(Student, Account.id == Student.user_id)
             .where(
                 or_(
-                    User.email == credentials.identifier,
-                    StudentProfile.student_id == credentials.identifier,
+                    Account.email == credentials.identifier,
+                    Student.student_id == credentials.identifier,
                 )
             )
         )
@@ -168,10 +170,10 @@ class AuthService:
     # ── FR-01: Registration ───────────────────────────────────────────────────
     async def register(
         self,
-        data: UserCreate,
+        data: AccountCreate,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
-    ) -> User:
+    ) -> Account:
         """
         Create a new credential-based user account.
         1. Validates email domain
@@ -182,23 +184,72 @@ class AuthService:
         validate_esi_email(data.email)
 
         # 2. Duplicate check
-        result = await self.db.execute(select(User).where(User.email == data.email))
+        result = await self.db.execute(select(Account).where(Account.email == data.email))
         if result.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email is already registered.",
             )
 
+        if data.role == UserRole.STUDENT and data.student_id:
+            student_result = await self.db.execute(
+                select(Student).where(Student.student_id == data.student_id)
+            )
+            if student_result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Student ID is already registered.",
+                )
+
+        if data.role == UserRole.TEACHER and data.employee_id:
+            teacher_result = await self.db.execute(
+                select(Teacher).where(Teacher.employee_id == data.employee_id)
+            )
+            if teacher_result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Employee ID is already registered.",
+                )
+
         # 3. Create user
-        new_user = User(
+        new_user = Account(
             email=data.email,
             hashed_password=hash_password(data.password),
             first_name=data.first_name,
             last_name=data.last_name,
+            phone=data.phone,
             role=data.role,
             is_active=True,
         )
         self.db.add(new_user)
+        await self.db.flush()
+
+        if data.role == UserRole.ADMIN:
+            self.db.add(
+                Admin(
+                    user_id=new_user.id,
+                    department=data.department or "Administration",
+                    admin_level=data.admin_level or "regular",
+                )
+            )
+        elif data.role == UserRole.TEACHER:
+            self.db.add(
+                Teacher(
+                    user_id=new_user.id,
+                    employee_id=data.employee_id,
+                    specialization=data.specialization,
+                )
+            )
+        else:
+            self.db.add(
+                Student(
+                    user_id=new_user.id,
+                    student_id=data.student_id,
+                    program=data.program,
+                    level=data.level,
+                    group=data.group,
+                )
+            )
         await self.db.flush()
 
         # 4. Audit log
@@ -214,13 +265,225 @@ class AuthService:
 
         return new_user
 
+    # ── Account Management (Admin) ───────────────────────────────────────────
+    async def get_account_by_id(self, account_id: UUID) -> Account:
+        result = await self.db.execute(select(Account).where(Account.id == account_id))
+        account = result.scalar_one_or_none()
+        if not account:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Account not found.",
+            )
+        return account
+
+    async def update_account(self, account_id: UUID, data: AccountUpdate) -> Account:
+        account = await self.get_account_by_id(account_id)
+        payload = data.model_dump(exclude_unset=True)
+
+        if "email" in payload:
+            if not payload["email"]:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email cannot be empty.",
+                )
+            email = validate_esi_email(payload["email"])
+            if email != account.email:
+                email_result = await self.db.execute(
+                    select(Account).where(
+                        and_(Account.email == email, Account.id != account.id)
+                    )
+                )
+                if email_result.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Email is already registered.",
+                    )
+            account.email = email
+
+        for field in ("first_name", "last_name"):
+            if field in payload:
+                value = payload[field]
+                if value is None or not str(value).strip():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"{field} cannot be empty.",
+                    )
+                setattr(account, field, str(value).strip())
+
+        if "phone" in payload:
+            phone = payload["phone"]
+            account.phone = None if phone is None else str(phone).strip() or None
+
+        student_fields = {"student_id", "program", "level", "group"} & payload.keys()
+        if student_fields:
+            if account.role != UserRole.STUDENT:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Student profile fields can only be updated for student accounts.",
+                )
+
+            student_result = await self.db.execute(
+                select(Student).where(Student.user_id == account.id)
+            )
+            student_profile = student_result.scalar_one_or_none()
+            if student_profile is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Student profile not found for this account.",
+                )
+
+            for required_field in ("student_id", "program", "level"):
+                if required_field in payload and (
+                    payload[required_field] is None
+                    or not str(payload[required_field]).strip()
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"{required_field} cannot be empty.",
+                    )
+
+            new_student_id = (
+                str(payload["student_id"]).strip()
+                if "student_id" in payload and payload["student_id"] is not None
+                else None
+            )
+
+            if (
+                new_student_id
+                and new_student_id != student_profile.student_id
+            ):
+                duplicate_student = await self.db.execute(
+                    select(Student).where(
+                        and_(
+                            Student.student_id == new_student_id,
+                            Student.user_id != account.id,
+                        )
+                    )
+                )
+                if duplicate_student.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Student ID is already registered.",
+                    )
+
+            for field in student_fields:
+                value = payload[field]
+                if isinstance(value, str):
+                    value = value.strip() or None
+                setattr(student_profile, field, value)
+            self.db.add(student_profile)
+
+        teacher_fields = {"employee_id", "specialization"} & payload.keys()
+        if teacher_fields:
+            if account.role != UserRole.TEACHER:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Teacher profile fields can only be updated for teacher accounts.",
+                )
+
+            teacher_result = await self.db.execute(
+                select(Teacher).where(Teacher.user_id == account.id)
+            )
+            teacher_profile = teacher_result.scalar_one_or_none()
+            if teacher_profile is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Teacher profile not found for this account.",
+                )
+
+            if "employee_id" in payload and (
+                payload["employee_id"] is None
+                or not str(payload["employee_id"]).strip()
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="employee_id cannot be empty.",
+                )
+
+            new_employee_id = (
+                str(payload["employee_id"]).strip()
+                if "employee_id" in payload and payload["employee_id"] is not None
+                else None
+            )
+
+            if (
+                new_employee_id
+                and new_employee_id != teacher_profile.employee_id
+            ):
+                duplicate_teacher = await self.db.execute(
+                    select(Teacher).where(
+                        and_(
+                            Teacher.employee_id == new_employee_id,
+                            Teacher.user_id != account.id,
+                        )
+                    )
+                )
+                if duplicate_teacher.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Employee ID is already registered.",
+                    )
+
+            for field in teacher_fields:
+                value = payload[field]
+                if isinstance(value, str):
+                    value = value.strip() or None
+                setattr(teacher_profile, field, value)
+            self.db.add(teacher_profile)
+
+        admin_fields = {"department", "admin_level"} & payload.keys()
+        if admin_fields:
+            if account.role != UserRole.ADMIN:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Admin profile fields can only be updated for admin accounts.",
+                )
+
+            admin_result = await self.db.execute(
+                select(Admin).where(Admin.user_id == account.id)
+            )
+            admin_profile = admin_result.scalar_one_or_none()
+            if admin_profile is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Admin profile not found for this account.",
+                )
+
+            for required_field in ("department", "admin_level"):
+                if required_field in payload and (
+                    payload[required_field] is None
+                    or not str(payload[required_field]).strip()
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"{required_field} cannot be empty.",
+                    )
+
+            for field in admin_fields:
+                value = payload[field]
+                if isinstance(value, str):
+                    value = value.strip()
+                setattr(admin_profile, field, value)
+            self.db.add(admin_profile)
+
+        self.db.add(account)
+        await self.db.flush()
+        return account
+
+    async def set_account_active_state(self, account_id: UUID, is_active: bool) -> Account:
+        account = await self.get_account_by_id(account_id)
+        account.is_active = is_active
+        self.db.add(account)
+        await self.db.flush()
+        return account
+
     # ── FR-01: Logout ─────────────────────────────────────────────────────────
 
     async def logout(
         self,
         access_token: str,
         refresh_token: Optional[str],
-        user: User,
+        user: Account,
         ip_address: Optional[str] = None,
     ) -> None:
         """
@@ -293,7 +556,7 @@ class AuthService:
         (an attacker could learn which emails are registered if we return
         different responses for found/not found).
         """
-        result = await self.db.execute(select(User).where(User.email == email))
+        result = await self.db.execute(select(Account).where(Account.email == email))
         user = result.scalar_one_or_none()
 
         if user and user.is_active:
@@ -360,7 +623,7 @@ class AuthService:
 
         # Load the user
         result = await self.db.execute(
-            select(User).where(User.id == reset_token.user_id)
+            select(Account).where(Account.id == reset_token.user_id)
         )
         user = result.scalar_one_or_none()
 
@@ -387,7 +650,7 @@ class AuthService:
     # ── Change Password (authenticated) ───────────────────────────────────────
     async def change_password(
         self,
-        user: User,
+        user: Account,
         data: ChangePasswordRequest,
         ip_address: Optional[str] = None,
     ) -> None:

@@ -42,7 +42,7 @@ class AuditLog(Base):
         nullable=False,
     )
 
-    user = relationship("User", back_populates="audit_logs")
+    user = relationship("Account", back_populates="audit_logs")
 
     def __repr__(self):
         return f"<AuditLog {self.action} user_id={self.user_id}>"

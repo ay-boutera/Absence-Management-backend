@@ -11,18 +11,24 @@ from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.helpers.permissions import require_admin_bearer, require_admin_or_teacher_bearer
+from app.helpers.permissions import (
+    require_can_import_data_bearer,
+    require_can_export_data_bearer,
+    require_admin_or_teacher_bearer,
+)
 from app.models.academic import (
     Absence,
-    ImportHistory,
-    ImportType,
+    ImportExportAction,
+    ImportExportDataType,
+    ImportExportFileType,
+    ImportExportLog,
     Module,
     PlanningSession,
     Salle,
     SessionType,
-    Student,
+    Student as AcademicStudent,
 )
-from app.models.user import User, UserRole
+from app.models.user import Account, UserRole
 from app.schemas.import_export import ImportErrorItem, ImportResponse
 
 router = APIRouter(tags=["Import/Export"])
@@ -74,7 +80,7 @@ def _parse_csv(content: str, expected_columns: list[str]) -> csv.DictReader:
 )
 async def import_students_csv(
     file: UploadFile = File(...),
-    current_user: User = Depends(require_admin_bearer),
+    current_user: Account = Depends(require_can_import_data_bearer),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -142,12 +148,12 @@ async def import_students_csv(
             continue
 
         student_result = await db.execute(
-            select(Student).where(Student.matricule == matricule)
+            select(AcademicStudent).where(AcademicStudent.matricule == matricule)
         )
         student = student_result.scalar_one_or_none()
 
         if student is None:
-            student = Student(
+            student = AcademicStudent(
                 matricule=matricule,
                 nom=(row.get("nom") or "").strip(),
                 prenom=(row.get("prenom") or "").strip(),
@@ -159,8 +165,8 @@ async def import_students_csv(
             db.add(student)
         else:
             await db.execute(
-                update(Student)
-                .where(Student.id == student.id)
+                update(AcademicStudent)
+                .where(AcademicStudent.id == student.id)
                 .values(
                     nom=(row.get("nom") or "").strip(),
                     prenom=(row.get("prenom") or "").strip(),
@@ -173,13 +179,16 @@ async def import_students_csv(
 
         imported_count += 1
 
-    history = ImportHistory(
-        user_id=current_user.id,
-        filename=file.filename or "students.csv",
-        import_type=ImportType.STUDENTS,
-        total_rows=total_rows,
+    history = ImportExportLog(
+        performed_by_id=current_user.id,
+        action=ImportExportAction.IMPORT,
+        file_type=ImportExportFileType.CSV,
+        file_name=file.filename or "students.csv",
+        data_type=ImportExportDataType.STUDENTS,
+        row_count=total_rows,
         success_count=imported_count,
         error_count=len(error_report),
+        error_details={"error_report": [item.model_dump() for item in error_report]},
     )
     db.add(history)
     await db.flush()
@@ -199,7 +208,7 @@ async def import_students_csv(
 )
 async def import_planning_csv(
     file: UploadFile = File(...),
-    current_user: User = Depends(require_admin_bearer),
+    current_user: Account = Depends(require_can_import_data_bearer),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -319,16 +328,14 @@ async def import_planning_csv(
             )
             continue
 
-        teacher_result = await db.execute(
-            select(User).where(
-                and_(
-                    User.id == teacher_uuid,
-                    User.role == UserRole.TEACHER,
-                )
+        teacher_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(Account)
+                .where(and_(Account.id == teacher_uuid, Account.role == UserRole.TEACHER))
             )
-        )
-        teacher = teacher_result.scalar_one_or_none()
-        if not teacher:
+        ).scalar_one()
+        if teacher_count == 0:
             error_report.append(
                 ImportErrorItem(
                     line=line_number,
@@ -375,7 +382,7 @@ async def import_planning_csv(
                 heure_debut=parsed_start,
                 heure_fin=parsed_end,
                 salle=salle_raw,
-                id_enseignant=teacher.id,
+                id_enseignant=teacher_uuid,
             )
             db.add(session)
         else:
@@ -389,19 +396,22 @@ async def import_planning_csv(
                     heure_debut=parsed_start,
                     heure_fin=parsed_end,
                     salle=salle_raw,
-                    id_enseignant=teacher.id,
+                    id_enseignant=teacher_uuid,
                 )
             )
 
         imported_count += 1
 
-    history = ImportHistory(
-        user_id=current_user.id,
-        filename=file.filename or "planning.csv",
-        import_type=ImportType.PLANNING,
-        total_rows=total_rows,
+    history = ImportExportLog(
+        performed_by_id=current_user.id,
+        action=ImportExportAction.IMPORT,
+        file_type=ImportExportFileType.CSV,
+        file_name=file.filename or "planning.csv",
+        data_type=ImportExportDataType.SCHEDULE,
+        row_count=total_rows,
         success_count=imported_count,
         error_count=len(error_report),
+        error_details={"error_report": [item.model_dump() for item in error_report]},
     )
     db.add(history)
     await db.flush()
@@ -426,7 +436,7 @@ async def export_absences_csv(
     matricule_etudiant: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1000),
-    current_user: User = Depends(require_admin_or_teacher_bearer),
+    current_user: Account = Depends(require_can_export_data_bearer),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -438,11 +448,11 @@ async def export_absences_csv(
     """
     base_query = (
         select(
-            Student.matricule,
-            Student.nom,
-            Student.prenom,
-            Student.filiere,
-            Student.groupe,
+            AcademicStudent.matricule,
+            AcademicStudent.nom,
+            AcademicStudent.prenom,
+            AcademicStudent.filiere,
+            AcademicStudent.groupe,
             Module.code,
             Module.nom,
             PlanningSession.type_seance,
@@ -452,14 +462,14 @@ async def export_absences_csv(
             Absence.statut_justificatif,
         )
         .select_from(Absence)
-        .join(Student, Student.matricule == Absence.student_matricule)
+        .join(AcademicStudent, AcademicStudent.matricule == Absence.student_matricule)
         .join(PlanningSession, PlanningSession.id == Absence.planning_session_id)
         .join(Module, Module.code == PlanningSession.code_module)
     )
 
     filters = []
     if filiere:
-        filters.append(Student.filiere == filiere)
+        filters.append(AcademicStudent.filiere == filiere)
     if code_module:
         filters.append(Module.code == code_module)
     if date_from:
@@ -467,7 +477,7 @@ async def export_absences_csv(
     if date_to:
         filters.append(PlanningSession.date <= date_to)
     if matricule_etudiant:
-        filters.append(Student.matricule == matricule_etudiant)
+        filters.append(AcademicStudent.matricule == matricule_etudiant)
 
     if getattr(current_user.role, "value", str(current_user.role)) == UserRole.TEACHER.value:
         filters.append(PlanningSession.id_enseignant == current_user.id)
@@ -521,6 +531,20 @@ async def export_absences_csv(
     csv_bytes = output.getvalue().encode("utf-8")
     filename = f"absences_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
 
+    db.add(
+        ImportExportLog(
+            performed_by_id=current_user.id,
+            action=ImportExportAction.EXPORT,
+            file_type=ImportExportFileType.CSV,
+            file_name=filename,
+            data_type=ImportExportDataType.ATTENDANCE,
+            row_count=total_count,
+            success_count=len(rows),
+            error_count=0,
+            error_details={},
+        )
+    )
+
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Total-Count": str(total_count),
@@ -529,3 +553,48 @@ async def export_absences_csv(
     }
 
     return StreamingResponse(iter([csv_bytes]), media_type="text/csv", headers=headers)
+
+
+@router.get(
+    "/import-export/history",
+    summary="Get import/export audit history",
+)
+async def import_export_history(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: Account = Depends(require_admin_or_teacher_bearer),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(ImportExportLog).order_by(ImportExportLog.created_at.desc())
+
+    if getattr(current_user.role, "value", str(current_user.role)) == UserRole.TEACHER.value:
+        query = query.where(ImportExportLog.performed_by_id == current_user.id)
+
+    total = (
+        await db.execute(select(func.count()).select_from(query.subquery()))
+    ).scalar_one()
+    rows = (
+        await db.execute(query.offset((page - 1) * page_size).limit(page_size))
+    ).scalars().all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": str(item.id),
+                "performed_by_id": str(item.performed_by_id) if item.performed_by_id is not None else None,
+                "action": item.action.value,
+                "file_type": item.file_type.value,
+                "file_name": item.file_name,
+                "data_type": item.data_type.value,
+                "row_count": item.row_count,
+                "success_count": item.success_count,
+                "error_count": item.error_count,
+                "error_details": item.error_details,
+                "created_at": item.created_at.isoformat() if item.created_at is not None else None,
+            }
+            for item in rows
+        ],
+    }

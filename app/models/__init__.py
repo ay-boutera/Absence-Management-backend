@@ -1,29 +1,48 @@
-from .user import User, StudentProfile, PasswordResetToken, UserRole
+from .user import (
+    Account,
+    Admin,
+    Teacher,
+    Student,
+    StudentProfile,
+    PasswordResetToken,
+    UserRole,
+)
 from .audit_log import AuditLog, ActionType
 from .academic import (
     Absence,
     ImportHistory,
+    ImportExportLog,
+    ImportExportAction,
+    ImportExportDataType,
+    ImportExportFileType,
     ImportType,
     Module,
     PlanningSession,
     Salle,
     SessionType,
-    Student,
+    Student as AcademicStudent,
 )
 
 __all__ = [
-    "User",
+    "Account",
+    "Admin",
+    "Teacher",
+    "Student",
     "StudentProfile",
     "PasswordResetToken",
     "AuditLog",
     "ActionType",
     "UserRole",
-    "Student",
+    "AcademicStudent",
     "Module",
     "Salle",
     "PlanningSession",
     "Absence",
     "ImportHistory",
+    "ImportExportLog",
+    "ImportExportAction",
+    "ImportExportDataType",
+    "ImportExportFileType",
     "ImportType",
     "SessionType",
 ]

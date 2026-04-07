@@ -10,7 +10,7 @@ How FastAPI dependencies work:
 
 Example usage in a route:
     @router.get("/admin-only")
-    async def admin_route(current_user: User = Depends(require_admin)):
+    async def admin_route(current_user: Account = Depends(require_admin)):
         ...   # Only admins can reach this code
 
 The dependency chain:
@@ -31,7 +31,7 @@ from sqlalchemy import select
 from datetime import datetime, timedelta, timezone
 
 from app.db import get_db
-from app.models.user import User, UserRole
+from app.models.user import Account, UserRole, Admin, Teacher
 from app.helpers.security import get_token_from_cookie, decode_token, ACCESS_COOKIE_NAME
 from app.services.redis_service import RedisService
 from app.config import settings
@@ -43,12 +43,12 @@ import uuid
 async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> User:
+) -> Account:
     """
     1. Extract access_token from the HttpOnly cookie
     2. Decode and verify the JWT
     3. Check the token is not blacklisted (logged out)
-    4. Load and return the User from the database
+    4. Load and return the Account from the database
     """
     # Step 1: Get token from cookie
     token = get_token_from_cookie(request, ACCESS_COOKIE_NAME)
@@ -84,7 +84,7 @@ async def get_current_user(
         )
 
     # Step 4: Load user from DB
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    result = await db.execute(select(Account).where(Account.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
 
     if not user:
@@ -99,9 +99,9 @@ async def get_current_user(
 # ── Active User Check ─────────────────────────────────────────────────────────
 async def require_active_user(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: Account = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> User:
+) -> Account:
     """
     Builds on get_current_user.
     Additionally checks:
@@ -138,8 +138,8 @@ async def require_active_user(
 
 # ── Role Dependencies ─────────────────────────────────────────────────────────
 async def require_admin(
-    current_user: User = Depends(require_active_user),
-) -> User:
+    current_user: Account = Depends(require_active_user),
+) -> Account:
     """Only Administration role can access routes protected by this dependency."""
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(
@@ -150,8 +150,8 @@ async def require_admin(
 
 
 async def require_teacher(
-    current_user: User = Depends(require_active_user),
-) -> User:
+    current_user: Account = Depends(require_active_user),
+) -> Account:
     """Only Teacher/Invigilator role can access routes protected by this dependency."""
     if current_user.role != UserRole.TEACHER:
         raise HTTPException(
@@ -162,8 +162,8 @@ async def require_teacher(
 
 
 async def require_student(
-    current_user: User = Depends(require_active_user),
-) -> User:
+    current_user: Account = Depends(require_active_user),
+) -> Account:
     """Only Student role can access routes protected by this dependency."""
     if current_user.role != UserRole.STUDENT:
         raise HTTPException(
@@ -176,8 +176,8 @@ async def require_student(
 
 
 async def require_admin_or_teacher(
-    current_user: User = Depends(require_active_user),
-) -> User:
+    current_user: Account = Depends(require_active_user),
+) -> Account:
     """Admin OR Teacher can access. Used for routes both roles share."""
     if current_user.role not in (UserRole.ADMIN, UserRole.TEACHER):
         raise HTTPException(
@@ -191,8 +191,8 @@ def require_role(allowed_role: UserRole) -> Callable:
     """Returns a dependency that checks if the user has a specific role."""
 
     async def role_dependency(
-        current_user: User = Depends(require_active_user),
-    ) -> User:
+        current_user: Account = Depends(require_active_user),
+    ) -> Account:
         if current_user.role != allowed_role:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -206,7 +206,7 @@ def require_role(allowed_role: UserRole) -> Callable:
 async def get_current_user_bearer(
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> User:
+) -> Account:
     """
     Bearer-based auth dependency.
     Expects Authorization: Bearer <access_token>
@@ -251,7 +251,7 @@ async def get_current_user_bearer(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    result = await db.execute(select(Account).where(Account.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(
@@ -277,8 +277,8 @@ async def get_current_user_bearer(
 
 
 async def require_admin_bearer(
-    current_user: User = Depends(get_current_user_bearer),
-) -> User:
+    current_user: Account = Depends(get_current_user_bearer),
+) -> Account:
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -288,11 +288,66 @@ async def require_admin_bearer(
 
 
 async def require_admin_or_teacher_bearer(
-    current_user: User = Depends(get_current_user_bearer),
-) -> User:
+    current_user: Account = Depends(get_current_user_bearer),
+) -> Account:
     if current_user.role not in (UserRole.ADMIN, UserRole.TEACHER):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Administrator or Teacher role required.",
         )
     return current_user
+
+
+async def require_can_import_data_bearer(
+    current_user: Account = Depends(get_current_user_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> Account:
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Only administrators can import data.",
+        )
+
+    admin_result = await db.execute(select(Admin).where(Admin.user_id == current_user.id))
+    admin_profile = admin_result.scalar_one_or_none()
+    if admin_profile is not None and not admin_profile.can_import_data:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Import permission is disabled for this admin account.",
+        )
+
+    return current_user
+
+
+async def require_can_export_data_bearer(
+    current_user: Account = Depends(get_current_user_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> Account:
+    if current_user.role == UserRole.ADMIN:
+        admin_result = await db.execute(
+            select(Admin).where(Admin.user_id == current_user.id)
+        )
+        admin_profile = admin_result.scalar_one_or_none()
+        if admin_profile is not None and not admin_profile.can_export_data:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. Export permission is disabled for this admin account.",
+            )
+        return current_user
+
+    if current_user.role == UserRole.TEACHER:
+        teacher_result = await db.execute(
+            select(Teacher).where(Teacher.user_id == current_user.id)
+        )
+        teacher_profile = teacher_result.scalar_one_or_none()
+        if teacher_profile is not None and not teacher_profile.can_export_data:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. Export permission is disabled for this teacher account.",
+            )
+        return current_user
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Access denied. Administrator or Teacher role required.",
+    )

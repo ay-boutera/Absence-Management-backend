@@ -42,7 +42,7 @@ from app.schemas import (
     MessageResponse,
     OAuthStateResponse,
     OAuthLoginResponse,
-    UserResponse,
+    AccountResponse,
 )
 from app.services.auth_service import AuthService
 from app.services.oauth_service import OAuthService
@@ -56,7 +56,7 @@ from app.helpers.security import (
 )
 from app.helpers.permissions import require_active_user
 from app.helpers.request import get_client_ip
-from app.models.user import User
+from app.models.user import Account
 from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -105,7 +105,7 @@ async def login(
 async def logout(
     request: Request,
     response: Response,
-    current_user: User = Depends(require_active_user),
+    current_user: Account = Depends(require_active_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Blacklists both tokens in Redis and clears all auth cookies."""
@@ -196,7 +196,7 @@ async def confirm_password_reset(
 async def change_password(
     data: ChangePasswordRequest,
     request: Request,
-    current_user: User = Depends(require_active_user),
+    current_user: Account = Depends(require_active_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Only for users who have a password set. OAuth-only users cannot use this."""
@@ -217,8 +217,8 @@ async def change_password(
     return MessageResponse(message="Password changed successfully.")
 
 
-@router.get("/me", response_model=UserResponse, summary="Get current user info")
-async def get_current_user_info(current_user: User = Depends(require_active_user)):
+@router.get("/me", response_model=AccountResponse, summary="Get current user info")
+async def get_current_user_info(current_user: Account = Depends(require_active_user)):
     """
     Returns the logged-in user's profile.
     The React frontend calls this on startup to restore auth state.
