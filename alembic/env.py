@@ -18,7 +18,9 @@ if db_url.startswith("postgresql+asyncpg"):
     db_url = db_url.replace("postgresql+asyncpg", "postgresql+psycopg2", 1)
 elif db_url.startswith("sqlite+aiosqlite"):
     db_url = db_url.replace("sqlite+aiosqlite", "sqlite", 1)
-config.set_main_option("sqlalchemy.url", db_url)
+# Alembic uses configparser interpolation, so "%" must be escaped ("%%")
+# to support URL-encoded credentials such as %40 / %23 / %24.
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
