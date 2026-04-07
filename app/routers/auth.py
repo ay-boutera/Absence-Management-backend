@@ -290,6 +290,7 @@ async def google_callback(
     )
 
     # Build redirect response to the frontend
+    redirect_url = f"{settings.FRONTEND_URL}/{user.role.value}?new={str(is_new_user).lower()}"
     redirect_url = (
         f"{settings.FRONTEND_URL}/{user.role.value}?new={str(is_new_user).lower()}"
     )
