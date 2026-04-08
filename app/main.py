@@ -87,7 +87,10 @@ if settings.CORS_ALLOW_ALL:
     cors_kwargs["allow_origins"] = []
     cors_kwargs["allow_origin_regex"] = ".*"
 else:
-    cors_kwargs["allow_origins"] = [settings.FRONTEND_URL]  # e.g., http://localhost:5173
+    cors_kwargs["allow_origins"] = [
+        settings.FRONTEND_URL
+    ]  # e.g., http://localhost:5173
+    cors_kwargs["allow_origin_regex"] = r"http://localhost(:\d+)?"
 
 app.add_middleware(CORSMiddleware, **cors_kwargs)
 
