@@ -12,8 +12,10 @@ from app import models as _models  # noqa: F401
 
 config = context.config
 
-# Convert async drivers to sync drivers for Alembic.
-db_url = os.getenv("DATABASE_URL", "")
+# Prefer a dedicated migration URL when provided; fallback to DATABASE_URL.
+# This is useful for hosted environments (e.g. Render) where app/runtime DB URL
+# and migration DB URL may differ.
+db_url = os.getenv("ALEMBIC_DATABASE_URL") or os.getenv("DATABASE_URL", "")
 if db_url.startswith("postgresql+asyncpg"):
     db_url = db_url.replace("postgresql+asyncpg", "postgresql+psycopg2", 1)
 elif db_url.startswith("sqlite+aiosqlite"):
