@@ -45,16 +45,15 @@ async def override_get_db():
             raise
 
 
-app.dependency_overrides[get_db] = override_get_db
-
-
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
+    app.dependency_overrides[get_db] = override_get_db
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest_asyncio.fixture
@@ -184,7 +183,7 @@ async def test_swagger_documented_endpoints_smoke(client: AsyncClient):
         patch(
             "app.services.auth_service.send_password_reset_email",
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=True,
         ),
         patch("app.services.auth_service.hash_password", side_effect=fake_hash_password),
         patch(
@@ -289,7 +288,8 @@ async def test_swagger_documented_endpoints_smoke(client: AsyncClient):
         )
         assert reset_confirm.status_code == 200
 
-        oauth_url = await client.get("/api/v1/auth/google")
+        with patch("app.routers.auth.secrets.token_urlsafe", return_value="fake-state"):
+            oauth_url = await client.get("/api/v1/auth/google")
         assert oauth_url.status_code == 200
 
         oauth_callback = await client.get(
@@ -298,6 +298,15 @@ async def test_swagger_documented_endpoints_smoke(client: AsyncClient):
             follow_redirects=False,
         )
         assert oauth_callback.status_code == 302
+
+        relogin_admin = await client.post(
+            "/api/v1/auth/login",
+            json={"identifier": "a.admin@esi-sba.dz", "password": "AdminChanged1!"},
+        )
+        assert relogin_admin.status_code == 200
+        csrf_token = client.cookies.get("csrf_token")
+        assert csrf_token
+        csrf_headers = {"X-CSRF-Token": csrf_token}
 
         create_student = await client.post(
             "/api/v1/accounts/students",

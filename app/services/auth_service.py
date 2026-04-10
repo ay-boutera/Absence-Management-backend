@@ -11,6 +11,7 @@ Why a service layer?
     - Logic can be reused across multiple routers
 """
 
+import re
 import secrets
 import logging
 from datetime import datetime, timedelta, timezone
@@ -189,6 +190,7 @@ class AuthService:
         data: AccountCreate,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
+        allow_full_firstname_email: bool = False,
     ) -> Account:
         """
         Create a new credential-based user account.
@@ -197,7 +199,19 @@ class AuthService:
         3. Hashes password
         4. Saves user to DB
         """
-        validate_esi_email(data.email)
+        if allow_full_firstname_email:
+            email = data.email.strip().lower()
+            loose_pattern = re.compile(r"^[a-z]+\.[a-z]+(-[a-z]+)*@esi-sba\.dz$")
+            if not loose_pattern.match(email):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Access is restricted to ESI-SBA institutional accounts. "
+                        "Your email must follow the format: first.last@esi-sba.dz."
+                    ),
+                )
+        else:
+            validate_esi_email(data.email)
 
         # 2. Duplicate check
         result = await self.db.execute(select(Account).where(Account.email == data.email))
@@ -610,7 +624,13 @@ class AuthService:
                 logger.warning(
                     "Password reset email not sent for user_id=%s", user.id
                 )
-                return
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "Password reset email could not be delivered right now. "
+                        "Please verify your email address and try again in a few minutes."
+                    ),
+                )
 
             # Persist token only after successful email dispatch.
             reset_token = PasswordResetToken(

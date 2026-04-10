@@ -26,6 +26,7 @@ from app.middlewares.security import security_headers
 from app.config import settings
 from app.db import engine, Base
 from app.routers import auth, import_export, users
+from app.services.email_service import log_smtp_health_check
 
 
 # ── Rate Limiter ──────────────────────────────────────────────────────────────
@@ -39,6 +40,8 @@ async def lifespan(app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         print("✅ Dev tables created/verified")
+
+    await log_smtp_health_check()
 
     yield
 

@@ -42,17 +42,16 @@ async def override_get_db():
             raise
 
 
-app.dependency_overrides[get_db] = override_get_db
-
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
+    app.dependency_overrides[get_db] = override_get_db
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest_asyncio.fixture
@@ -329,7 +328,7 @@ class TestPasswordReset:
         assert r2.status_code == 200  # same response — prevents user enumeration
 
     @pytest.mark.asyncio
-    async def test_reset_email_failure_still_200(self, client, admin_user):
+    async def test_reset_email_failure_returns_503(self, client, admin_user):
         with patch(
             "app.services.auth_service.send_password_reset_email",
             new_callable=AsyncMock,
@@ -339,7 +338,8 @@ class TestPasswordReset:
                 "/api/v1/auth/reset-password", json={"email": "a.user@esi-sba.dz"}
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 503
+        assert "could not be delivered" in response.json()["detail"].lower()
 
         async with TestSessionLocal() as session:
             tokens = (
@@ -464,7 +464,11 @@ class TestGoogleOAuth:
         """handle_callback raises 403 for non-ESI email."""
         from fastapi import HTTPException
 
-        with patch(
+        with patch("app.routers.auth.secrets.token_urlsafe", return_value="valid_state"), patch(
+            "app.routers.auth.OAuthService.get_authorization_url",
+            new_callable=AsyncMock,
+            return_value="https://accounts.google.com/o/oauth2/v2/auth?state=valid_state",
+        ), patch(
             "app.routers.auth.OAuthService.handle_callback",
             new_callable=AsyncMock,
             side_effect=HTTPException(
@@ -472,8 +476,9 @@ class TestGoogleOAuth:
                 detail="Access is restricted to ESI-SBA institutional accounts.",
             ),
         ):
+            await client.get("/api/v1/auth/google")
             response = await client.get(
-                "/api/v1/auth/google/callback?code=code&state=state"
+                "/api/v1/auth/google/callback?code=code&state=valid_state"
             )
         assert response.status_code == 403
 
@@ -503,18 +508,23 @@ class TestGoogleOAuth:
         access = create_access_token({"sub": str(user_id), "role": "student"})
         refresh = create_refresh_token({"sub": str(user_id), "role": "student"})
 
-        with patch(
+        with patch("app.routers.auth.secrets.token_urlsafe", return_value="valid_state"), patch(
+            "app.routers.auth.OAuthService.get_authorization_url",
+            new_callable=AsyncMock,
+            return_value="https://accounts.google.com/o/oauth2/v2/auth?state=valid_state",
+        ), patch(
             "app.routers.auth.OAuthService.handle_callback",
             new_callable=AsyncMock,
             return_value=(new_user, access, refresh, True),  # is_new_user=True
         ):
+            await client.get("/api/v1/auth/google")
             response = await client.get(
                 "/api/v1/auth/google/callback?code=auth_code&state=valid_state",
                 follow_redirects=False,
             )
 
         assert response.status_code == 302
-        assert "dashboard" in response.headers["location"]
+        assert "/student" in response.headers["location"]
         assert "new=true" in response.headers["location"]
         assert "access_token" in response.cookies
         assert "refresh_token" in response.cookies
@@ -546,11 +556,16 @@ class TestGoogleOAuth:
         access = create_access_token({"sub": str(user_id), "role": "teacher"})
         refresh = create_refresh_token({"sub": str(user_id), "role": "teacher"})
 
-        with patch(
+        with patch("app.routers.auth.secrets.token_urlsafe", return_value="valid"), patch(
+            "app.routers.auth.OAuthService.get_authorization_url",
+            new_callable=AsyncMock,
+            return_value="https://accounts.google.com/o/oauth2/v2/auth?state=valid",
+        ), patch(
             "app.routers.auth.OAuthService.handle_callback",
             new_callable=AsyncMock,
             return_value=(existing, access, refresh, False),  # is_new_user=False
         ):
+            await client.get("/api/v1/auth/google")
             response = await client.get(
                 "/api/v1/auth/google/callback?code=auth_code&state=valid",
                 follow_redirects=False,
