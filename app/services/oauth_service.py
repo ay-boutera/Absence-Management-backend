@@ -117,15 +117,7 @@ class OAuthService:
         Returns: (user, access_token, refresh_token, is_new_user)
         Raises:  HTTPException on any failure
         """
-        # ── a. Validate state (CSRF check for OAuth flow) ─────────────────────
-        stored = await self.redis.get(f"{_STATE_PREFIX}{state}")
-        if not stored:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired OAuth state. Please try logging in again.",
-            )
-        # Delete immediately — single use
-        await self.redis.delete(f"{_STATE_PREFIX}{state}")
+        # ── a. State validation is handled in the router via sessions ─────────
 
         # ── b. Exchange code for tokens ───────────────────────────────────────
         async with self._make_client() as client:

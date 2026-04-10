@@ -270,7 +270,7 @@ async def google_login(
     # Ask OAuthService to build the URL using OUR state (not its own)
     oauth_service = OAuthService(db)
     url = await oauth_service.get_authorization_url(state)
-    return RedirectResponse(url)
+    return OAuthStateResponse(authorization_url=url)
 
 
 @router.get(
@@ -307,12 +307,14 @@ async def google_callback(
     if not stored_state or stored_state != state:
         raise HTTPException(400, "Invalid OAuth state. Please try logging in again.")
 
+    # ── Steps 3-6: Delegate to OAuthService ──────────────────────────────────
     service = OAuthService(db)
     user, access_token, refresh_token, is_new_user = await service.handle_callback(
         code=code,
         ip_address=get_client_ip(request),
     )
 
+    # ── Step 7: Redirect to frontend with auth cookies ───────────────────────
     redirect_url = (
         f"{settings.FRONTEND_URL}/{user.role.value}?new={str(is_new_user).lower()}"
     )
