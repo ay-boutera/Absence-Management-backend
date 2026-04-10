@@ -33,7 +33,6 @@ from datetime import datetime, timedelta, timezone
 from app.db import get_db
 from app.models.user import Account, UserRole, Admin, Teacher
 from app.helpers.security import get_token_from_cookie, decode_token, ACCESS_COOKIE_NAME
-from app.services.redis_service import RedisService
 from app.config import settings
 
 import uuid
@@ -75,13 +74,6 @@ async def get_current_user(
             detail="Token payload is missing subject.",
         )
 
-    # Step 3: Check Redis blacklist (handles logout)
-    redis = RedisService()
-    if await redis.is_token_blacklisted(token):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has been revoked. Please log in again.",
-        )
 
     # Step 4: Load user from DB
     result = await db.execute(select(Account).where(Account.id == uuid.UUID(user_id)))
@@ -237,8 +229,8 @@ async def get_current_user_bearer(
     """
     Auth dependency for endpoints primarily documented with Bearer tokens.
     Supports either:
-      - Authorization: Bearer <access_token>
-      - access_token cookie fallback (for cookie-based sessions)
+        - Authorization: Bearer <access_token>
+        - access_token cookie fallback (for cookie-based sessions)
     """
     authorization = request.headers.get("Authorization")
     token = ""

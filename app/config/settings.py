@@ -15,9 +15,6 @@ class Settings(BaseSettings):
     # ── CSRF ──────────────────────────────────────────────────────────────────
     CSRF_SECRET_KEY: str
 
-    # ── Redis (token blacklist) ────────────────────────────────────────────────
-    REDIS_URL: str = "redis://localhost:6379/0"
-    USE_REDIS: bool = True
 
     # ── Google OAuth2 ──────────────────────────────────────────────────────────
     #   Get these from: https://console.cloud.google.com/apis/credentials

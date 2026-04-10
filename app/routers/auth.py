@@ -315,8 +315,15 @@ async def google_callback(
     )
 
     # ── Step 7: Redirect to frontend with auth cookies ───────────────────────
+    from urllib.parse import quote
+    full_name = quote(f"{user.first_name} {user.last_name}")
+    avatar = quote(user.avatar_url or "")
+    
     redirect_url = (
-        f"{settings.FRONTEND_URL}/{user.role.value}?new={str(is_new_user).lower()}"
+        f"{settings.FRONTEND_URL}/auth/callback"
+        f"?name={full_name}"
+        f"&avatar={avatar}"
+        f"&role={user.role.value}"
     )
     redirect_response = RedirectResponse(url=redirect_url, status_code=302)
     set_auth_cookies(redirect_response, access_token, refresh_token)

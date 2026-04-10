@@ -42,7 +42,6 @@ from app.helpers.security import (
     decode_token,
 )
 from app.helpers.email import validate_esi_email
-from app.services.redis_service import RedisService
 from app.services.email_service import send_password_reset_email
 from app.config import settings
 
@@ -55,7 +54,6 @@ class AuthService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.redis = RedisService()
 
     # ── Internal: Audit Log Helper ────────────────────────────────────────────
     async def _log(
@@ -531,13 +529,8 @@ class AuthService:
         user: Account,
         ip_address: Optional[str] = None,
     ) -> None:
-        """
-        Invalidate both tokens by adding them to the Redis blacklist.
-        After this, neither token is usable — even if they haven't expired yet.
-        """
-        await self.redis.blacklist_token(access_token)
-        if refresh_token:
-            await self.redis.blacklist_token(refresh_token)
+        # Tokens are no longer blacklisted (Redis removed)
+        pass
 
         await self._log(
             ActionType.LOGOUT,
@@ -562,18 +555,9 @@ class AuthService:
                 detail="Invalid token type.",
             )
 
-        # Check it hasn't been revoked
-        if await self.redis.is_token_blacklisted(refresh_token):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token has been revoked.",
-            )
-
+        # Token rotation is disabled (Redis removed)
         user_id = payload.get("sub")
         role = payload.get("role")
-
-        # Blacklist the old refresh token (token rotation)
-        await self.redis.blacklist_token(refresh_token)
 
         # Issue new tokens
         token_data = {"sub": user_id, "role": role}
