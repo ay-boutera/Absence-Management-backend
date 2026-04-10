@@ -12,6 +12,7 @@ Why a service layer?
 """
 
 import secrets
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
@@ -43,6 +44,9 @@ from app.helpers.email import validate_esi_email
 from app.services.redis_service import RedisService
 from app.services.email_service import send_password_reset_email
 from app.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -591,6 +595,24 @@ class AuthService:
             # secrets.token_urlsafe(32) = 43 URL-safe base64 characters
             raw_token = secrets.token_urlsafe(32)
 
+            try:
+                full_name = f"{user.first_name} {user.last_name}"
+                email_sent = await send_password_reset_email(
+                    str(user.email), full_name, raw_token
+                )
+            except Exception:
+                logger.exception(
+                    "Password reset email delivery failed for user_id=%s", user.id
+                )
+                return
+
+            if not email_sent:
+                logger.warning(
+                    "Password reset email not sent for user_id=%s", user.id
+                )
+                return
+
+            # Persist token only after successful email dispatch.
             reset_token = PasswordResetToken(
                 user_id=user.id,
                 token=raw_token,
@@ -598,10 +620,6 @@ class AuthService:
                 + timedelta(minutes=settings.RESET_TOKEN_EXPIRE_MINUTES),
             )
             self.db.add(reset_token)
-
-            # Send the email asynchronously
-            full_name = f"{user.first_name} {user.last_name}"
-            await send_password_reset_email(user.email, full_name, raw_token)
 
             await self._log(
                 ActionType.PASSWORD_RESET_REQUESTED,

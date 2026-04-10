@@ -13,12 +13,13 @@ import uuid
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.main import app
 from app.db import Base, get_db
-from app.models.user import Account, UserRole
+from app.models.user import Account, UserRole, PasswordResetToken
 from app.core.security import hash_password
 from fastapi import HTTPException as FastAPIHTTPException
 
@@ -326,6 +327,29 @@ class TestPasswordReset:
             )
         assert r1.status_code == 200
         assert r2.status_code == 200  # same response — prevents user enumeration
+
+    @pytest.mark.asyncio
+    async def test_reset_email_failure_still_200(self, client, admin_user):
+        with patch(
+            "app.services.auth_service.send_password_reset_email",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            response = await client.post(
+                "/api/v1/auth/reset-password", json={"email": "a.user@esi-sba.dz"}
+            )
+
+        assert response.status_code == 200
+
+        async with TestSessionLocal() as session:
+            tokens = (
+                await session.execute(
+                    select(PasswordResetToken).where(
+                        PasswordResetToken.user_id == admin_user.id
+                    )
+                )
+            ).scalars().all()
+        assert len(tokens) == 0
 
     @pytest.mark.asyncio
     async def test_weak_password_rejected(self, client):
