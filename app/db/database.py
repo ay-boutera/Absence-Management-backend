@@ -26,7 +26,10 @@ if not DATABASE_URL.startswith("sqlite"):
         "pool_recycle": 3600,
         "pool_timeout": 30,
         "connect_args": {
-            "server_settings": {"application_name": "AMS-FastAPI"},
+            "server_settings": {
+                "application_name": "AMS-FastAPI",
+                "search_path": "public",
+            },
             "command_timeout": 60,
         },
     })

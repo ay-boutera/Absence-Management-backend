@@ -12,7 +12,7 @@ from app.schemas.auth import validate_password_complexity
 
 
 def _schema_example_email(local_part: str) -> str:
-    return "@".join((local_part, "example.edu"))
+    return "@".join((local_part, "esi-sba.dz"))
 
 
 SCHEMA_EXAMPLE_PASSWORD = "".join(("Example", "Auth", "1!"))
