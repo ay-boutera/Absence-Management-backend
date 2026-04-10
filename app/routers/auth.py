@@ -267,10 +267,8 @@ async def google_login(
     request.session[_OAUTH_STATE_SESSION_KEY] = state
 
     # Ask OAuthService to build the URL using OUR state (not its own)
-    service = OAuthService(db)
-    url = await service.get_authorization_url(state=state)
-
-    return OAuthStateResponse(authorization_url=url)
+    url = await oauth_service.get_authorization_url(state)
+    return RedirectResponse(url)
 
 
 @router.get(
@@ -304,6 +302,9 @@ async def google_callback(
     # Using .pop() so the state can only be used once (replay protection).
     stored_state = request.session.pop(_OAUTH_STATE_SESSION_KEY, None)
 
+    if not stored_state or stored_state != state:
+        raise HTTPException(400, "Invalid OAuth state. Please try logging in again.")
+
     # ── Step 2: CSRF validation ───────────────────────────────────────────────
     if not stored_state:
         raise HTTPException(
@@ -315,7 +316,7 @@ async def google_callback(
         # Use compare_digest to prevent timing attacks
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OAuth state. Please try logging in again.",
+            detail="Invalid OAuth state. try yrt Please try logging in again.",
         )
 
     # ── Steps 3-6: Delegate to OAuthService ──────────────────────────────────

@@ -98,26 +98,15 @@ class OAuthService:
         self.db.add(log)
 
     # ── Step 1: Generate authorization URL ───────────────────────────────────
+
+
     async def get_authorization_url(self, state: str) -> str:
-        """
-        The 'state' is a random string we send to Google; Google echoes it
-        back in the callback. We verify it matches what we stored.
-        This prevents an attacker from forging a callback request.
-        """
-        state = secrets.token_urlsafe(32)
-
-        # Store state in Redis — expires in 10 min
-        await self.redis.setex(f"{_STATE_PREFIX}{state}", _STATE_TTL, "1")
-
         async with self._make_client() as client:
             url, _ = client.create_authorization_url(
                 GOOGLE_AUTH_URL,
                 state=state,
-                # access_type=offline would give a refresh_token from Google,
-                # but we don't need it — we issue our own refresh tokens.
-                prompt="select_account",  # always show account picker
+                prompt="select_account",
             )
-
         return url
 
     # ── Step 2: Handle callback ───────────────────────────────────────────────
