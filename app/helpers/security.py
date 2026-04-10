@@ -160,7 +160,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         value=access_token,
         httponly=True,
         secure=settings.ENVIRONMENT == "production",  # Allow HTTP in dev mode
-        samesite="strict",
+        samesite=None,
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
@@ -171,9 +171,9 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         value=refresh_token,
         httponly=True,
         secure=settings.ENVIRONMENT == "production",
-        samesite="strict",
+        samesite=None,
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-        path="/api/v1/auth/refresh",  # Only sent to the refresh endpoint
+        path="/",
     )
 
     # CSRF token cookie — NOT HttpOnly (JS needs to read it)
@@ -182,7 +182,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         value=csrf_token,
         httponly=False,  # JS MUST be able to read this
         secure=settings.ENVIRONMENT == "production",
-        samesite="strict",
+        samesite=None,
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
@@ -193,7 +193,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
 def clear_auth_cookies(response: Response) -> None:
     """Remove all auth cookies on logout."""
     response.delete_cookie(ACCESS_COOKIE_NAME)
-    response.delete_cookie(REFRESH_COOKIE_NAME, path="/api/v1/auth/refresh")
+    response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
     response.delete_cookie(CSRF_COOKIE_NAME)
 
 
