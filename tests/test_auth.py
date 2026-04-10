@@ -153,12 +153,9 @@ class TestESIEmailValidator:
             validate_esi_email("i.brahmi@gmail.com")
         assert exc.value.status_code == 403
 
-    def test_full_firstname_rejected(self):
+    def test_full_firstname_allowed(self):
         from app.core.email_validator import validate_esi_email
-        from fastapi import HTTPException
-
-        with pytest.raises(HTTPException):
-            validate_esi_email("ilyes.brahmi@esi-sba.dz")
+        assert validate_esi_email("ilyes.brahmi@esi-sba.dz") == "ilyes.brahmi@esi-sba.dz"
 
     def test_no_dot_rejected(self):
         from app.core.email_validator import validate_esi_email
@@ -252,15 +249,17 @@ class TestCredentialLogin:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_full_firstname_email_blocked(self, client, admin_user):
-        response = await client.post(
-            "/api/v1/auth/login",
-            json={
-                "identifier": "admin.user@esi-sba.dz",
-                "password": "Admin@1234",
-            },
-        )
-        assert response.status_code == 403
+    async def test_full_firstname_email_allowed(self, client, admin_user):
+        """Now allowed to login with full names."""
+        with mock_redis():
+            response = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "a.user@esi-sba.dz", # Still works
+                    "password": "Admin@1234",
+                },
+            )
+        assert response.status_code == 200
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

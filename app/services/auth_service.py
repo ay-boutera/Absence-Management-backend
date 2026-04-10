@@ -207,7 +207,7 @@ class AuthService:
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=(
                         "Access is restricted to ESI-SBA institutional accounts. "
-                        "Your email must follow the format: first.last@esi-sba.dz."
+                        "Your email must follow the format: first.last@esi-sba.dz "
                     ),
                 )
         else:
