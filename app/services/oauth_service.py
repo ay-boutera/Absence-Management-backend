@@ -12,7 +12,7 @@ Full sequence:
     Step 2 — Google → GET /auth/google/callback?code=...&state=...
     Google redirects back with an authorization 'code'.
     Server:
-        a. Validates 'state' matches what we stored in Redis (CSRF check)
+        a. Validates 'state' matches what we stored in Redis (CSRF check) in production no redis available for now ?
         b. Exchanges 'code' for tokens at Google's token endpoint
         c. Fetches the user's profile (email, name, picture) from Google
         d. Validates email matches @esi-sba.dz pattern
@@ -98,10 +98,8 @@ class OAuthService:
         self.db.add(log)
 
     # ── Step 1: Generate authorization URL ───────────────────────────────────
-    async def get_authorization_url(self) -> str:
+    async def get_authorization_url(self, state: str) -> str:
         """
-        Build the Google consent screen URL and store the state in Redis.
-
         The 'state' is a random string we send to Google; Google echoes it
         back in the callback. We verify it matches what we stored.
         This prevents an attacker from forging a callback request.
@@ -123,12 +121,7 @@ class OAuthService:
         return url
 
     # ── Step 2: Handle callback ───────────────────────────────────────────────
-    async def handle_callback(
-        self,
-        code: str,
-        state: str,
-        ip_address: Optional[str] = None,
-    ) -> tuple[Account, str, str, bool]:
+    async def handle_callback(self, code: str, ip_address: str) -> tuple:
         """
         Process the OAuth callback from Google.
 
@@ -194,7 +187,9 @@ class OAuthService:
         is_new_user = False
 
         # First: look up by google_id (subsequent logins — fastest path)
-        result = await self.db.execute(select(Account).where(Account.google_id == google_id))
+        result = await self.db.execute(
+            select(Account).where(Account.google_id == google_id)
+        )
         user = result.scalar_one_or_none()
 
         if not user:

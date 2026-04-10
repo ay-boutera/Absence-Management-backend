@@ -10,7 +10,7 @@ This is where the app is assembled:
 
 Run with:
     uvicorn app.main:app --reload
-    http://localhost:8000/api/v1/docs ( hna talgo documentation b3d ma diro run l server b3dha dir run l frontend ).
+    http://localhost:8000/api/v1/docs
 """
 
 from contextlib import asynccontextmanager
@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from starlette.middleware.sessions import SessionMiddleware  # ← NEW
 
 from app.middlewares.security import security_headers
 from app.config import settings
@@ -28,30 +29,19 @@ from app.routers import auth, import_export, users
 
 
 # ── Rate Limiter ──────────────────────────────────────────────────────────────
-# Protects auth endpoints against brute-force attacks (ENF-06).
-# Uses the client's IP address as the rate-limit key.
 limiter = Limiter(key_func=get_remote_address)
 
 
 # ── Startup / Shutdown ────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Code before 'yield' runs at startup.
-    Code after 'yield' runs at shutdown.
-
-    In development: create tables automatically.
-    In production: use Alembic migrations (never auto-create).
-    """
     if settings.DEBUG:
-        # Auto-create tables in dev — in production, run: alembic upgrade head
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         print("✅ Dev tables created/verified")
 
-    yield  # Application runs here
+    yield
 
-    # Shutdown: close the DB connection pool
     await engine.dispose()
     print("✅ Database connection pool closed")
 
@@ -61,35 +51,42 @@ app = FastAPI(
     title=settings.APP_NAME,
     description="Backend API for the ESI-SBA Absence Management System",
     version="1.0.0",
-    docs_url="/api/v1/docs",  # Swagger UI
-    redoc_url="/api/v1/redoc",  # ReDoc
+    docs_url="/api/v1/docs",
+    redoc_url="/api/v1/redoc",
     openapi_url="/api/v1/openapi.json",
     lifespan=lifespan,
 )
 
-# Attach rate limiter to the app
+# Attach rate limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
+# ── Session Middleware ────────────────────────────────────────────────────────
+# MUST be added BEFORE CORSMiddleware so the session cookie is available
+# during the OAuth callback redirect.
+# Used exclusively to carry the OAuth `state` token between the two OAuth steps.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.SECRET_KEY,  # reuse your existing secret
+    same_site="lax",  # required: allows cookie on cross-site redirect
+    https_only=False,  # set True when running on HTTPS in production
+    max_age=600,  # 10 minutes — enough time to complete OAuth
+)
+
+
 # ── CORS Middleware ───────────────────────────────────────────────────────────
-# CORS controls which origins (frontend URLs) are allowed to call this API.
-# allow_credentials=True is REQUIRED when using cookies.
-# Without it, the browser will refuse to send cookies cross-origin.
 cors_kwargs = {
-    "allow_credentials": True,  # REQUIRED for HttpOnly cookies
+    "allow_credentials": True,
     "allow_methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     "allow_headers": ["Content-Type", "X-CSRF-Token", "Authorization"],
 }
 
 if settings.CORS_ALLOW_ALL:
-    # Allow any frontend origin while still supporting credentials.
     cors_kwargs["allow_origins"] = []
     cors_kwargs["allow_origin_regex"] = ".*"
 else:
-    cors_kwargs["allow_origins"] = [
-        settings.FRONTEND_URL
-    ]  # e.g., http://localhost:5173
+    cors_kwargs["allow_origins"] = [settings.FRONTEND_URL]
     cors_kwargs["allow_origin_regex"] = r"http://localhost(:\d+)?"
 
 app.add_middleware(CORSMiddleware, **cors_kwargs)
@@ -100,7 +97,6 @@ app.middleware("http")(security_headers)
 
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-# All routes are prefixed with /api/v1 for versioning.
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(import_export.router, prefix="/api/v1")
@@ -109,14 +105,10 @@ app.include_router(import_export.router, prefix="/api/v1")
 # ── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/health", tags=["System"])
 async def health_check():
-    """Simple endpoint to verify the API is running. Used by monitoring tools."""
     return {"status": "ok", "service": settings.APP_NAME}
 
 
 # ── Root ──────────────────────────────────────────────────────────────────────
 @app.get("/", tags=["System"])
 async def root():
-    return {
-        "message": "AMS API is running",
-        "docs": "/api/v1/docs",
-    }
+    return {"message": "AMS API is running", "docs": "/api/v1/docs"}
