@@ -1,5 +1,8 @@
+import logging
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from app.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 conf = ConnectionConfig(
     MAIL_USERNAME=settings.MAIL_USERNAME,
@@ -36,4 +39,11 @@ async def send_password_reset_email(email: str, full_name: str, token: str):
     )
 
     fm = FastMail(conf)
-    await fm.send_message(message)
+    try:
+        await fm.send_message(message)
+        logger.info(f"Password reset email sent successfully to {email}")
+    except Exception as e:
+        logger.error(f"Failed to send password reset email to {email}: {str(e)}")
+        # In production, we might want to re-raise or handle this differently
+        # For now, logging it is the first step to identify the problem.
+        raise e
