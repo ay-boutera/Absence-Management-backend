@@ -54,6 +54,7 @@ from app.schemas import (
     OAuthLoginResponse,
     AccountResponse,
 )
+from app.db import get_db
 from app.services.auth_service import AuthService
 from app.services.oauth_service import OAuthService
 from app.helpers.security import (
@@ -267,6 +268,7 @@ async def google_login(
     request.session[_OAUTH_STATE_SESSION_KEY] = state
 
     # Ask OAuthService to build the URL using OUR state (not its own)
+    oauth_service = OAuthService(db)
     url = await oauth_service.get_authorization_url(state)
     return RedirectResponse(url)
 
@@ -305,30 +307,12 @@ async def google_callback(
     if not stored_state or stored_state != state:
         raise HTTPException(400, "Invalid OAuth state. Please try logging in again.")
 
-    # ── Step 2: CSRF validation ───────────────────────────────────────────────
-    if not stored_state:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="OAuth session expired. Please try logging in again.",
-        )
-
-    if not secrets.compare_digest(stored_state, state):
-        # Use compare_digest to prevent timing attacks
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OAuth state. try yrt Please try logging in again.",
-        )
-
-    # ── Steps 3-6: Delegate to OAuthService ──────────────────────────────────
     service = OAuthService(db)
     user, access_token, refresh_token, is_new_user = await service.handle_callback(
         code=code,
         ip_address=get_client_ip(request),
-        # NOTE: state validation is now done above — OAuthService no longer
-        # needs to check it against Redis.
     )
 
-    # ── Step 7: Redirect to frontend with auth cookies ───────────────────────
     redirect_url = (
         f"{settings.FRONTEND_URL}/{user.role.value}?new={str(is_new_user).lower()}"
     )
