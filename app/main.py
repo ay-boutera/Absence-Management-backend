@@ -73,7 +73,7 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=settings.SECRET_KEY,  # reuse your existing secret
     same_site="lax",  # required: allows cookie on cross-site redirect
-    https_only=False,  # set True when running on HTTPS in production
+    https_only=settings.ENVIRONMENT == "production",
     max_age=600,  # 10 minutes — enough time to complete OAuth
 )
 

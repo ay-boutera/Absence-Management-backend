@@ -459,11 +459,51 @@ class TestGoogleOAuth:
         assert "state" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
+    async def test_callback_signed_state_without_session_cookie(self, client):
+        """Callback accepts a valid signed state even when session cookie is missing."""
+        user_id = uuid.uuid4()
+        async with TestSessionLocal() as session:
+            existing = Account(
+                id=user_id,
+                first_name="Nour",
+                last_name="Trari",
+                email="n.trari@esi-sba.dz",
+                hashed_password=hash_password("Pass@1234"),
+                role=UserRole.TEACHER,
+                is_active=True,
+                google_id="google_uid_existing",
+            )
+            session.add(existing)
+            await session.commit()
+            await session.refresh(existing)
+
+        from app.core.security import create_access_token, create_refresh_token
+        from app.routers.auth import _build_signed_oauth_state
+
+        access = create_access_token({"sub": str(user_id), "role": "teacher"})
+        refresh = create_refresh_token({"sub": str(user_id), "role": "teacher"})
+        signed_state = _build_signed_oauth_state()
+
+        with patch(
+            "app.routers.auth.OAuthService.handle_callback",
+            new_callable=AsyncMock,
+            return_value=(existing, access, refresh, False),
+        ):
+            response = await client.get(
+                f"/api/v1/auth/google/callback?code=auth_code&state={signed_state}",
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert "access_token" in response.cookies
+        assert "refresh_token" in response.cookies
+
+    @pytest.mark.asyncio
     async def test_callback_non_esi_email_rejected(self, client):
         """handle_callback raises 403 for non-ESI email."""
         from fastapi import HTTPException
 
-        with patch("app.routers.auth.secrets.token_urlsafe", return_value="valid_state"), patch(
+        with patch("app.routers.auth._build_signed_oauth_state", return_value="valid_state"), patch(
             "app.routers.auth.OAuthService.get_authorization_url",
             new_callable=AsyncMock,
             return_value="https://accounts.google.com/o/oauth2/v2/auth?state=valid_state",
@@ -507,7 +547,7 @@ class TestGoogleOAuth:
         access = create_access_token({"sub": str(user_id), "role": "student"})
         refresh = create_refresh_token({"sub": str(user_id), "role": "student"})
 
-        with patch("app.routers.auth.secrets.token_urlsafe", return_value="valid_state"), patch(
+        with patch("app.routers.auth._build_signed_oauth_state", return_value="valid_state"), patch(
             "app.routers.auth.OAuthService.get_authorization_url",
             new_callable=AsyncMock,
             return_value="https://accounts.google.com/o/oauth2/v2/auth?state=valid_state",
@@ -555,7 +595,7 @@ class TestGoogleOAuth:
         access = create_access_token({"sub": str(user_id), "role": "teacher"})
         refresh = create_refresh_token({"sub": str(user_id), "role": "teacher"})
 
-        with patch("app.routers.auth.secrets.token_urlsafe", return_value="valid"), patch(
+        with patch("app.routers.auth._build_signed_oauth_state", return_value="valid"), patch(
             "app.routers.auth.OAuthService.get_authorization_url",
             new_callable=AsyncMock,
             return_value="https://accounts.google.com/o/oauth2/v2/auth?state=valid",

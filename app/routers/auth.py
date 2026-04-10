@@ -37,7 +37,11 @@ STATE STORAGE — why session cookies instead of Redis:
         ✓ automatically scoped to the user's browser
 """
 
+import base64
+import hashlib
+import hmac
 import secrets
+import time
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +78,55 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 # Session key used to store the OAuth state token
 _OAUTH_STATE_SESSION_KEY = "oauth_state"
+_OAUTH_STATE_MAX_AGE_SECONDS = 600
+
+
+def _build_signed_oauth_state() -> str:
+    """Create a short-lived, signed OAuth state token.
+
+    Format: <nonce>.<issued_at_unix>.<signature_b64url>
+    Signature: HMAC-SHA256(secret_key, "<nonce>.<issued_at_unix>")
+    """
+    nonce = secrets.token_urlsafe(32)
+    issued_at = str(int(time.time()))
+    payload = f"{nonce}.{issued_at}"
+
+    signature = hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    signature_b64 = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+
+    return f"{payload}.{signature_b64}"
+
+
+def _is_valid_signed_oauth_state(state: str) -> bool:
+    """Validate signature + expiry for a stateless OAuth state token."""
+    try:
+        nonce, issued_at_str, received_sig_b64 = state.split(".", 2)
+        if not nonce or not issued_at_str or not received_sig_b64:
+            return False
+
+        issued_at = int(issued_at_str)
+        now = int(time.time())
+
+        if issued_at > now or (now - issued_at) > _OAUTH_STATE_MAX_AGE_SECONDS:
+            return False
+
+        payload = f"{nonce}.{issued_at_str}"
+        expected_sig = hmac.new(
+            settings.SECRET_KEY.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        expected_sig_b64 = (
+            base64.urlsafe_b64encode(expected_sig).decode("ascii").rstrip("=")
+        )
+
+        return secrets.compare_digest(expected_sig_b64, received_sig_b64)
+    except Exception:
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -259,8 +312,10 @@ async def google_login(
         const { authorization_url } = await api.get('/auth/google')
         window.location.href = authorization_url
     """
-    # Generate a fresh state token for this login attempt
-    state = secrets.token_urlsafe(32)
+    # Generate a fresh, signed state token for this login attempt.
+    # Session remains the primary validation path, signed token is a
+    # safe fallback when browsers block third-party session cookies.
+    state = _build_signed_oauth_state()
 
     # Persist it in the session cookie — survives the browser round-trip to
     # Google and back. SessionMiddleware signs the cookie so it can't be
@@ -303,8 +358,12 @@ async def google_callback(
     # ── Step 1: Retrieve and immediately consume the stored state ─────────────
     # Using .pop() so the state can only be used once (replay protection).
     stored_state = request.session.pop(_OAUTH_STATE_SESSION_KEY, None)
+    session_state_valid = bool(
+        stored_state and secrets.compare_digest(stored_state, state)
+    )
+    signed_state_valid = _is_valid_signed_oauth_state(state)
 
-    if not stored_state or stored_state != state:
+    if not session_state_valid and not signed_state_valid:
         raise HTTPException(400, "Invalid OAuth state. Please try logging in again.")
 
     # ── Steps 3-6: Delegate to OAuthService ──────────────────────────────────
