@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from sqlalchemy import (
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -82,6 +83,9 @@ class Module(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code = Column(String(50), unique=True, nullable=False, index=True)
     nom = Column(String(255), nullable=False)
+    annee = Column(String(10), nullable=True)
+    has_td = Column(Boolean, nullable=False, default=False)
+    has_tp = Column(Boolean, nullable=False, default=False)
 
     planning_sessions = relationship("PlanningSession", back_populates="module")
 

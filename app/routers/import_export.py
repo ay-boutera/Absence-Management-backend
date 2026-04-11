@@ -91,26 +91,39 @@ async def import_students_csv(
     - Returns detailed row-level errors with row data
 
     Expected UTF-8 comma-delimited columns:
-    matricule, nom, prenom, filiere, niveau, groupe, email
+    student_id, last_name, first_name, email, program, level, group,
+    can_submit_justifications, can_view_attendance, can_confirm_rattrapage, is_enrolled
     """
     raw = await file.read()
     content = _decode_utf8(raw)
 
-    expected_columns = [
-        "matricule",
-        "nom",
-        "prenom",
-        "filiere",
-        "niveau",
-        "groupe",
+    required_columns = [
+        "student_id",
+        "last_name",
+        "first_name",
         "email",
+        "program",
+        "level",
+        "group",
     ]
-    reader = _parse_csv(content, expected_columns)
+    optional_bool_columns = [
+        "can_submit_justifications",
+        "can_view_attendance",
+        "can_confirm_rattrapage",
+        "is_enrolled",
+    ]
+    expected_columns = required_columns + optional_bool_columns
+    reader = _parse_csv(content, required_columns)
+
+    def _parse_bool(value: str, default: bool = True) -> bool:
+        if not value:
+            return default
+        return value.strip().lower() in ("1", "true", "yes", "oui")
 
     error_report: list[ImportErrorItem] = []
     total_rows = 0
-    parsed_rows: list[tuple[int, dict[str, str]]] = []
-    seen_matricules: set[str] = set()
+    parsed_rows: list[tuple[int, dict]] = []
+    seen_student_ids: set[str] = set()
     seen_emails: set[str] = set()
 
     for line_number, row in enumerate(reader, start=2):
@@ -118,9 +131,9 @@ async def import_students_csv(
             continue
 
         total_rows += 1
-        cleaned_row = {column: (row.get(column) or "").strip() for column in expected_columns}
+        cleaned_row = {col: (row.get(col) or "").strip() for col in required_columns}
 
-        missing_fields = [field for field, value in cleaned_row.items() if not value]
+        missing_fields = [field for field in required_columns if not cleaned_row[field]]
         for field in missing_fields:
             error_report.append(
                 ImportErrorItem(
@@ -131,19 +144,19 @@ async def import_students_csv(
                 )
             )
 
-        matricule = cleaned_row["matricule"]
-        if matricule:
-            if matricule in seen_matricules:
+        student_id = cleaned_row["student_id"]
+        if student_id:
+            if student_id in seen_student_ids:
                 error_report.append(
                     ImportErrorItem(
                         line=line_number,
-                        field="matricule",
-                        reason="Duplicate matricule found in file",
+                        field="student_id",
+                        reason="Duplicate student_id found in file",
                         row_data=cleaned_row,
                     )
                 )
             else:
-                seen_matricules.add(matricule)
+                seen_student_ids.add(student_id)
 
         email_value = cleaned_row["email"].lower()
         cleaned_row["email"] = email_value
@@ -172,6 +185,12 @@ async def import_students_csv(
                         row_data=cleaned_row,
                     )
                 )
+
+        # Parse optional boolean permission columns
+        cleaned_row["can_submit_justifications"] = _parse_bool(row.get("can_submit_justifications", ""), default=True)
+        cleaned_row["can_view_attendance"] = _parse_bool(row.get("can_view_attendance", ""), default=True)
+        cleaned_row["can_confirm_rattrapage"] = _parse_bool(row.get("can_confirm_rattrapage", ""), default=False)
+        cleaned_row["is_enrolled"] = _parse_bool(row.get("is_enrolled", ""), default=True)
 
         parsed_rows.append((line_number, cleaned_row))
 
@@ -424,28 +443,37 @@ async def import_teachers_csv(
     - Returns detailed row-level errors with row data
 
     Expected UTF-8 comma-delimited columns:
-    employee_id, email, first_name, last_name, phone, subjects, groups
+    employee_id (optional), email, first_name, last_name, specialization (optional),
+    subjects (optional), groups (optional)
 
-    `subjects` and `groups` are pipe-separated values (e.g. "MATH01|PHY02", "G1|G2").
-    `phone` is optional (leave blank if not available).
+    `employee_id` is auto-derived from the email prefix when omitted.
+    `subjects` and `groups` accept pipe-separated values ("MATH01|PHY02") or
+    JSON arrays (["MATH01", "PHY02"]).
     """
     raw = await file.read()
     content = _decode_utf8(raw)
 
-    expected_columns = [
-        "employee_id",
-        "email",
-        "first_name",
-        "last_name",
-        "phone",
-        "subjects",
-        "groups",
-    ]
-    reader = _parse_csv(content, expected_columns)
+    import json as _json
+
+    required_columns = ["email", "first_name", "last_name"]
+    reader = _parse_csv(content, required_columns)
+
+    def _normalize_list_field(value: str) -> str | None:
+        """Accept JSON arrays or pipe-separated strings; always store as pipe-separated."""
+        v = (value or "").strip()
+        if not v:
+            return None
+        if v.startswith("["):
+            try:
+                items = _json.loads(v)
+                return "|".join(str(i).strip() for i in items if str(i).strip())
+            except (_json.JSONDecodeError, TypeError):
+                pass
+        return v
 
     error_report: list[ImportErrorItem] = []
     total_rows = 0
-    parsed_rows: list[tuple[int, dict[str, str]]] = []
+    parsed_rows: list[tuple[int, dict]] = []
     seen_employee_ids: set[str] = set()
     seen_emails: set[str] = set()
 
@@ -454,10 +482,20 @@ async def import_teachers_csv(
             continue
 
         total_rows += 1
-        cleaned_row = {col: (row.get(col) or "").strip() for col in expected_columns}
+        cleaned_row: dict = {col: (row.get(col) or "").strip() for col in required_columns}
 
-        # Required fields (phone, subjects, groups are optional)
-        required_fields = ["employee_id", "email", "first_name", "last_name"]
+        # Optional columns — read when present, ignore when absent
+        cleaned_row["employee_id"] = (row.get("employee_id") or "").strip()
+        cleaned_row["phone"] = (row.get("phone") or "").strip()
+        cleaned_row["specialization"] = (row.get("specialization") or "").strip()
+        cleaned_row["subjects"] = _normalize_list_field(row.get("subjects", ""))
+        cleaned_row["groups"] = _normalize_list_field(row.get("groups", ""))
+
+        # Auto-derive employee_id from email prefix when not provided
+        if not cleaned_row["employee_id"] and cleaned_row["email"]:
+            cleaned_row["employee_id"] = cleaned_row["email"].split("@")[0]
+
+        required_fields = ["email", "first_name", "last_name"]
         for field in required_fields:
             if not cleaned_row[field]:
                 error_report.append(

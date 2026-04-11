@@ -16,15 +16,12 @@ class Settings(BaseSettings):
     # ── CSRF ──────────────────────────────────────────────────────────────────
     CSRF_SECRET_KEY: str
 
-
     # ── Google OAuth2 ──────────────────────────────────────────────────────────
-    #   Get these from: https://console.cloud.google.com/apis/credentials
-    #   Add Authorized redirect URI:
-    #      http://localhost:8000/api/v1/auth/google/callback   (dev)
-    #      https://your-domain.com/api/v1/auth/google/callback (prod)
     GOOGLE_CLIENT_ID: str
     GOOGLE_CLIENT_SECRET: str
-    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
+    GOOGLE_REDIRECT_URI: str = (
+        "https://ams-frontend-fddx.onrender.com/api/v1/auth/google/callback"
+    )
 
     # ── ESI-SBA Email Domain ───────────────────────────────────────────────────
     ALLOWED_EMAIL_DOMAIN: str = "esi-sba.dz"
@@ -40,7 +37,7 @@ class Settings(BaseSettings):
 
     # ── App ───────────────────────────────────────────────────────────────────
     APP_NAME: str = "AMS - Absence Management System"
-    FRONTEND_URL: str = "http://localhost:5173"
+    FRONTEND_URL: str = "https://ams-frontend-fddx.onrender.com"
     CORS_ALLOW_ALL: bool = False
 
     # ── Password Reset Token ───────────────────────────────────────────────────
