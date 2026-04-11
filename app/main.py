@@ -24,7 +24,7 @@ from starlette.middleware.sessions import SessionMiddleware  # ← NEW
 
 from app.middlewares.security import security_headers
 from app.config import settings
-from app.db import engine, Base
+from app.db import engine
 from app.routers import auth, import_export, teachers, users
 from app.services.email_service import log_smtp_health_check
 
@@ -36,15 +36,8 @@ limiter = Limiter(key_func=get_remote_address)
 # ── Startup / Shutdown ────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.DEBUG:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        print("✅ Dev tables created/verified")
-
     await log_smtp_health_check()
-
     yield
-
     await engine.dispose()
     print("✅ Database connection pool closed")
 

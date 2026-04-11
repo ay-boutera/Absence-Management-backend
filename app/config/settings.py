@@ -39,7 +39,6 @@ class Settings(BaseSettings):
 
     # ── App ───────────────────────────────────────────────────────────────────
     APP_NAME: str = "AMS - Absence Management System"
-    DEBUG: bool = False
     FRONTEND_URL: str = "http://localhost:5173"
     CORS_ALLOW_ALL: bool = False
 
@@ -50,7 +49,7 @@ class Settings(BaseSettings):
     SESSION_INACTIVITY_MINUTES: int = 30
 
     # ── Environment ───────────────────────────────────────────────────────────
-    ENVIRONMENT: str = "development"  # "development" or "production"
+    ENVIRONMENT: str = "production"  # "development" or "production"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
