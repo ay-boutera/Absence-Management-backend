@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str
     GOOGLE_CLIENT_SECRET: str
     GOOGLE_REDIRECT_URI: str = (
-        "https://ams-frontend-fddx.onrender.com/api/google/callback"
+        "https://ams-frontend-fddx.onrender.com/api/v1/auth/google/callback"
     )
 
     # ── ESI-SBA Email Domain ───────────────────────────────────────────────────
