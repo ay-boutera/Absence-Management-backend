@@ -9,7 +9,7 @@ Supports TWO login methods simultaneously:
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Boolean, DateTime, Enum, ForeignKey, Integer
+from sqlalchemy import Column, String, Boolean, DateTime, Enum, ForeignKey, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -108,6 +108,8 @@ class Teacher(Base):
 
     employee_id = Column(String(50), unique=True, nullable=True, index=True)
     specialization = Column(String(200), nullable=True)
+    subjects = Column(Text, nullable=True)   # pipe-separated module codes e.g. "MATH01|PHY02"
+    groups = Column(Text, nullable=True)     # pipe-separated group names e.g. "G1|G2|G3"
 
     can_mark_attendance = Column(Boolean, default=True, nullable=False)
     can_export_data = Column(Boolean, default=True, nullable=False)

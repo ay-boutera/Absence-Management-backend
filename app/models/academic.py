@@ -44,6 +44,7 @@ class ImportExportFileType(str, Enum):
 
 class ImportExportDataType(str, Enum):
     STUDENTS = "students"
+    TEACHERS = "teachers"
     ATTENDANCE = "attendance"
     SCHEDULE = "schedule"
     JUSTIFICATIONS = "justifications"

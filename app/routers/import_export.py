@@ -29,7 +29,7 @@ from app.models.academic import (
     SessionType,
     Student as AcademicStudent,
 )
-from app.models.user import Account, Student as StudentProfile, UserRole
+from app.models.user import Account, Student as StudentProfile, Teacher as TeacherProfile, UserRole
 from app.schemas.import_export import ImportErrorItem, ImportResponse
 
 router = APIRouter(tags=["Import/Export"])
@@ -408,6 +408,315 @@ async def import_students_csv(
 
 
 @router.post(
+    "/import/teachers",
+    response_model=ImportResponse,
+    summary="Import teachers from CSV",
+)
+async def import_teachers_csv(
+    file: UploadFile = File(...),
+    current_user: Account = Depends(require_can_import_data_bearer),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Import teachers with ALL-OR-NOTHING semantics.
+    - Validates every row first
+    - If any row is invalid, nothing is saved
+    - Returns detailed row-level errors with row data
+
+    Expected UTF-8 comma-delimited columns:
+    employee_id, email, first_name, last_name, phone, subjects, groups
+
+    `subjects` and `groups` are pipe-separated values (e.g. "MATH01|PHY02", "G1|G2").
+    `phone` is optional (leave blank if not available).
+    """
+    raw = await file.read()
+    content = _decode_utf8(raw)
+
+    expected_columns = [
+        "employee_id",
+        "email",
+        "first_name",
+        "last_name",
+        "phone",
+        "subjects",
+        "groups",
+    ]
+    reader = _parse_csv(content, expected_columns)
+
+    error_report: list[ImportErrorItem] = []
+    total_rows = 0
+    parsed_rows: list[tuple[int, dict[str, str]]] = []
+    seen_employee_ids: set[str] = set()
+    seen_emails: set[str] = set()
+
+    for line_number, row in enumerate(reader, start=2):
+        if not any((value or "").strip() for value in row.values()):
+            continue
+
+        total_rows += 1
+        cleaned_row = {col: (row.get(col) or "").strip() for col in expected_columns}
+
+        # Required fields (phone, subjects, groups are optional)
+        required_fields = ["employee_id", "email", "first_name", "last_name"]
+        for field in required_fields:
+            if not cleaned_row[field]:
+                error_report.append(
+                    ImportErrorItem(
+                        line=line_number,
+                        field=field,
+                        reason=f"{field} is required",
+                        row_data=cleaned_row,
+                    )
+                )
+
+        employee_id = cleaned_row["employee_id"]
+        if employee_id:
+            if employee_id in seen_employee_ids:
+                error_report.append(
+                    ImportErrorItem(
+                        line=line_number,
+                        field="employee_id",
+                        reason="Duplicate employee_id found in file",
+                        row_data=cleaned_row,
+                    )
+                )
+            else:
+                seen_employee_ids.add(employee_id)
+
+        email_value = cleaned_row["email"].lower()
+        cleaned_row["email"] = email_value
+        if email_value:
+            if email_value in seen_emails:
+                error_report.append(
+                    ImportErrorItem(
+                        line=line_number,
+                        field="email",
+                        reason="Duplicate email found in file",
+                        row_data=cleaned_row,
+                    )
+                )
+            else:
+                seen_emails.add(email_value)
+
+            try:
+                email_adapter.validate_python(email_value)
+            except (ValidationError, ValueError):
+                error_report.append(
+                    ImportErrorItem(
+                        line=line_number,
+                        field="email",
+                        reason="Invalid email format",
+                        row_data=cleaned_row,
+                    )
+                )
+
+        parsed_rows.append((line_number, cleaned_row))
+
+    if error_report:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "message": "Import rejected: one or more rows are invalid. No data was saved.",
+                "imported": 0,
+                "errors": len(error_report),
+                "error_report": [item.model_dump() for item in error_report],
+            },
+        )
+
+    if not parsed_rows:
+        history = ImportExportLog(
+            performed_by_id=current_user.id,
+            action=ImportExportAction.IMPORT,
+            file_type=ImportExportFileType.CSV,
+            file_name=file.filename or "teachers.csv",
+            data_type=ImportExportDataType.TEACHERS,
+            row_count=0,
+            success_count=0,
+            error_count=0,
+            error_details={"error_report": []},
+        )
+        db.add(history)
+        await db.flush()
+        return ImportResponse(imported=0, errors=0, error_report=[], history_id=history.id)
+
+    employee_ids = [row["employee_id"] for _, row in parsed_rows]
+    emails = [row["email"] for _, row in parsed_rows]
+
+    teacher_profiles_result = await db.execute(
+        select(TeacherProfile)
+        .options(selectinload(TeacherProfile.user))
+        .where(TeacherProfile.employee_id.in_(employee_ids))
+    )
+    profiles_by_employee_id = {p.employee_id: p for p in teacher_profiles_result.scalars().all()}
+
+    accounts_result = await db.execute(
+        select(Account)
+        .options(selectinload(Account.teacher_profile))
+        .where(func.lower(Account.email).in_(emails))
+    )
+    accounts_by_email = {a.email.lower(): a for a in accounts_result.scalars().all()}
+
+    prepared_rows: list[dict] = []
+    for line_number, row in parsed_rows:
+        employee_id = row["employee_id"]
+        email_value = row["email"]
+
+        existing_profile = profiles_by_employee_id.get(employee_id)
+        account_with_email = accounts_by_email.get(email_value)
+
+        selected_account: Account | None = None
+        selected_profile: TeacherProfile | None = None
+
+        if existing_profile is not None:
+            if existing_profile.user is None:
+                error_report.append(
+                    ImportErrorItem(
+                        line=line_number,
+                        field="employee_id",
+                        reason="Teacher profile is orphaned (no linked account).",
+                        row_data=row,
+                    )
+                )
+                continue
+            if existing_profile.user.role != UserRole.TEACHER:
+                error_report.append(
+                    ImportErrorItem(
+                        line=line_number,
+                        field="employee_id",
+                        reason="Teacher profile is linked to a non-teacher account.",
+                        row_data=row,
+                    )
+                )
+                continue
+            if account_with_email is not None and account_with_email.id != existing_profile.user.id:
+                error_report.append(
+                    ImportErrorItem(
+                        line=line_number,
+                        field="email",
+                        reason="Email is already used by another account.",
+                        row_data=row,
+                    )
+                )
+                continue
+            selected_account = existing_profile.user
+            selected_profile = existing_profile
+        else:
+            if account_with_email is not None:
+                if account_with_email.role != UserRole.TEACHER:
+                    error_report.append(
+                        ImportErrorItem(
+                            line=line_number,
+                            field="email",
+                            reason="Email is already used by a non-teacher account.",
+                            row_data=row,
+                        )
+                    )
+                    continue
+                if (
+                    account_with_email.teacher_profile is not None
+                    and account_with_email.teacher_profile.employee_id != employee_id
+                ):
+                    error_report.append(
+                        ImportErrorItem(
+                            line=line_number,
+                            field="email",
+                            reason=(
+                                "Email is already linked to another teacher profile "
+                                f"({account_with_email.teacher_profile.employee_id})."
+                            ),
+                            row_data=row,
+                        )
+                    )
+                    continue
+                selected_account = account_with_email
+                selected_profile = account_with_email.teacher_profile
+
+        prepared_rows.append(
+            {
+                "line": line_number,
+                "row": row,
+                "account": selected_account,
+                "teacher_profile": selected_profile,
+            }
+        )
+
+    if error_report:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "message": "Import rejected: one or more rows are invalid. No data was saved.",
+                "imported": 0,
+                "errors": len(error_report),
+                "error_report": [item.model_dump() for item in error_report],
+            },
+        )
+
+    async with db.begin_nested():
+        for item in prepared_rows:
+            row = item["row"]
+            account = item["account"]
+            teacher_profile = item["teacher_profile"]
+
+            if account is None:
+                account = Account(
+                    email=row["email"],
+                    first_name=row["first_name"],
+                    last_name=row["last_name"],
+                    phone=row["phone"] or None,
+                    hashed_password=None,
+                    role=UserRole.TEACHER,
+                    is_active=True,
+                )
+                db.add(account)
+                await db.flush()
+            else:
+                account.email = row["email"]
+                account.first_name = row["first_name"]
+                account.last_name = row["last_name"]
+                account.phone = row["phone"] or None
+                account.role = UserRole.TEACHER
+                db.add(account)
+
+            subjects_value = row["subjects"] or None
+            groups_value = row["groups"] or None
+
+            if teacher_profile is None:
+                teacher_profile = TeacherProfile(
+                    user_id=account.id,
+                    employee_id=row["employee_id"],
+                    subjects=subjects_value,
+                    groups=groups_value,
+                )
+                db.add(teacher_profile)
+            else:
+                teacher_profile.employee_id = row["employee_id"]
+                teacher_profile.subjects = subjects_value
+                teacher_profile.groups = groups_value
+                db.add(teacher_profile)
+
+        history = ImportExportLog(
+            performed_by_id=current_user.id,
+            action=ImportExportAction.IMPORT,
+            file_type=ImportExportFileType.CSV,
+            file_name=file.filename or "teachers.csv",
+            data_type=ImportExportDataType.TEACHERS,
+            row_count=total_rows,
+            success_count=len(prepared_rows),
+            error_count=0,
+            error_details={"error_report": []},
+        )
+        db.add(history)
+        await db.flush()
+
+    return ImportResponse(
+        imported=len(prepared_rows),
+        errors=0,
+        error_report=[],
+        history_id=history.id,
+    )
+
+
+@router.post(
     "/import/planning",
     response_model=ImportResponse,
     summary="Import planning sessions from CSV",
@@ -759,6 +1068,94 @@ async def export_absences_csv(
     }
 
     return StreamingResponse(iter([csv_bytes]), media_type="text/csv", headers=headers)
+
+
+@router.get(
+    "/planning",
+    summary="Get planning sessions",
+)
+async def get_planning(
+    date_from: Optional[dt_date] = Query(default=None),
+    date_to: Optional[dt_date] = Query(default=None),
+    code_module: Optional[str] = Query(default=None),
+    type_seance: Optional[SessionType] = Query(default=None),
+    id_enseignant: Optional[str] = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: Account = Depends(require_admin_or_teacher_bearer),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return planning sessions with optional filters.
+
+    - Admins see all sessions; teachers see only their own.
+    - Filters: date_from, date_to, code_module, type_seance, id_enseignant (admin only).
+    """
+    query = (
+        select(
+            PlanningSession.id,
+            PlanningSession.id_seance,
+            PlanningSession.code_module,
+            Module.nom.label("nom_module"),
+            PlanningSession.type_seance,
+            PlanningSession.date,
+            PlanningSession.heure_debut,
+            PlanningSession.heure_fin,
+            PlanningSession.salle,
+            PlanningSession.id_enseignant,
+        )
+        .join(Module, Module.code == PlanningSession.code_module)
+    )
+
+    filters = []
+    if date_from:
+        filters.append(PlanningSession.date >= date_from)
+    if date_to:
+        filters.append(PlanningSession.date <= date_to)
+    if code_module:
+        filters.append(PlanningSession.code_module == code_module)
+    if type_seance:
+        filters.append(PlanningSession.type_seance == type_seance)
+
+    if getattr(current_user.role, "value", str(current_user.role)) == UserRole.TEACHER.value:
+        filters.append(PlanningSession.id_enseignant == current_user.id)
+    elif id_enseignant:
+        try:
+            filters.append(PlanningSession.id_enseignant == uuid.UUID(id_enseignant))
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid id_enseignant format.",
+            )
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    query = query.order_by(PlanningSession.date.asc(), PlanningSession.heure_debut.asc())
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    rows = (await db.execute(query.offset((page - 1) * page_size).limit(page_size))).all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": str(row.id),
+                "id_seance": row.id_seance,
+                "code_module": row.code_module,
+                "nom_module": row.nom_module,
+                "type_seance": row.type_seance.value,
+                "date": row.date.isoformat() if row.date else None,
+                "heure_debut": row.heure_debut.strftime("%H:%M") if row.heure_debut else None,
+                "heure_fin": row.heure_fin.strftime("%H:%M") if row.heure_fin else None,
+                "salle": row.salle,
+                "id_enseignant": str(row.id_enseignant),
+            }
+            for row in rows
+        ],
+    }
 
 
 @router.get(
