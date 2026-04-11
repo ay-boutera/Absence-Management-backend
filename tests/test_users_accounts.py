@@ -28,9 +28,6 @@ async def override_get_db():
             raise
 
 
-app.dependency_overrides[get_db] = override_get_db
-
-
 def mock_redis():
     return patch(
         "app.services.redis_service.RedisService.is_token_blacklisted",
@@ -45,6 +42,7 @@ def fixture_password(role: str, index: int) -> str:
 
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
+    app.dependency_overrides[get_db] = override_get_db
     required_tables = [
         Account.__table__,
         Admin.__table__,
@@ -68,6 +66,7 @@ async def setup_db():
                 tables=required_tables,
             )
         )
+        app.dependency_overrides.pop(get_db, None)
 
 
 @pytest_asyncio.fixture

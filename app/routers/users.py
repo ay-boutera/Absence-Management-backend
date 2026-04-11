@@ -58,6 +58,7 @@ async def create_super_admin_account(
         ),
         ip_address=request.client.host if request.client else "unknown",
         user_agent=request.headers.get("user-agent"),
+        allow_full_firstname_email=True,
     )
     return account
 

@@ -53,4 +53,5 @@ redis.conf
 .env
 .env.render
 
+relational_schema.html
 .codex

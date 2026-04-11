@@ -12,18 +12,18 @@ Full sequence:
     Step 2 — Google → GET /auth/google/callback?code=...&state=...
     Google redirects back with an authorization 'code'.
     Server:
-        a. Validates 'state' matches what we stored in Redis (CSRF check)
+        a. Validates 'state' matches what we stored in Session Cookies (CSRF check)
         b. Exchanges 'code' for tokens at Google's token endpoint
         c. Fetches the user's profile (email, name, picture) from Google
         d. Validates email matches @esi-sba.dz pattern
-        e. Finds existing user OR creates a new one (first-time login)
+        e. Finds existing user (login only)
         f. Issues our own JWT tokens and sets HttpOnly cookies
-        g. Redirects browser to the React frontend dashboard
+        g. Redirects browser to the React frontend callback route
 
-Why store 'state' in Redis?
+Why store 'state' in Session Cookies?
     The state parameter prevents CSRF attacks on the OAuth callback itself.
-    We generate a random string, store it in Redis with a 10-minute TTL,
-    and verify it when Google calls us back. No state match = reject.
+    Storing it in a signed session cookie is stateless for the server
+    and prevents tampering. No state match = reject.
 
 Why link by email AND google_id?
     - First login: find by email → link google_id to existing account
@@ -44,7 +44,6 @@ from app.models.user import Account, UserRole, Student
 from app.models.audit_log import AuditLog, ActionType
 from app.helpers.email import validate_esi_email, extract_name_hint_from_email
 from app.helpers.security import create_access_token, create_refresh_token
-from app.services.redis_service import RedisService
 from app.config import settings
 
 # ── Google OAuth2 endpoints ────────────────────────────────────────────────────
@@ -58,16 +57,12 @@ GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 #   profile   — gives us name and picture URL
 GOOGLE_SCOPES = "openid email profile"
 
-# Redis key prefix for OAuth state storage
-_STATE_PREFIX = "oauth_state:"
-_STATE_TTL = 600  # 10 minutes
 
 
 class OAuthService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.redis = RedisService()
 
     # ── Internal helpers ──────────────────────────────────────────────────────
     def _make_client(self) -> AsyncOAuth2Client:
@@ -98,52 +93,26 @@ class OAuthService:
         self.db.add(log)
 
     # ── Step 1: Generate authorization URL ───────────────────────────────────
-    async def get_authorization_url(self) -> str:
-        """
-        Build the Google consent screen URL and store the state in Redis.
 
-        The 'state' is a random string we send to Google; Google echoes it
-        back in the callback. We verify it matches what we stored.
-        This prevents an attacker from forging a callback request.
-        """
-        state = secrets.token_urlsafe(32)
 
-        # Store state in Redis — expires in 10 min
-        await self.redis.setex(f"{_STATE_PREFIX}{state}", _STATE_TTL, "1")
-
+    async def get_authorization_url(self, state: str) -> str:
         async with self._make_client() as client:
             url, _ = client.create_authorization_url(
                 GOOGLE_AUTH_URL,
                 state=state,
-                # access_type=offline would give a refresh_token from Google,
-                # but we don't need it — we issue our own refresh tokens.
-                prompt="select_account",  # always show account picker
+                prompt="select_account",
             )
-
         return url
 
     # ── Step 2: Handle callback ───────────────────────────────────────────────
-    async def handle_callback(
-        self,
-        code: str,
-        state: str,
-        ip_address: Optional[str] = None,
-    ) -> tuple[Account, str, str, bool]:
+    async def handle_callback(self, code: str, ip_address: str) -> tuple:
         """
         Process the OAuth callback from Google.
 
         Returns: (user, access_token, refresh_token, is_new_user)
         Raises:  HTTPException on any failure
         """
-        # ── a. Validate state (CSRF check for OAuth flow) ─────────────────────
-        stored = await self.redis.get(f"{_STATE_PREFIX}{state}")
-        if not stored:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired OAuth state. Please try logging in again.",
-            )
-        # Delete immediately — single use
-        await self.redis.delete(f"{_STATE_PREFIX}{state}")
+        # ── a. State validation is handled in the router via sessions ─────────
 
         # ── b. Exchange code for tokens ───────────────────────────────────────
         async with self._make_client() as client:
@@ -194,12 +163,13 @@ class OAuthService:
         is_new_user = False
 
         # First: look up by google_id (subsequent logins — fastest path)
-        result = await self.db.execute(select(Account).where(Account.google_id == google_id))
+        result = await self.db.execute(
+            select(Account).where(Account.google_id == google_id)
+        )
         user = result.scalar_one_or_none()
 
         if not user:
-            # Second: look up by email (first OAuth login for an existing account)
-            # The admin may have pre-created the account before the user logged in.
+            # Look up by email (first OAuth login for an existing account)
             result = await self.db.execute(
                 select(Account).where(Account.email == google_email)
             )
@@ -211,44 +181,15 @@ class OAuthService:
                 user.avatar_url = avatar_url
                 self.db.add(user)
             else:
-                # Brand new user — create the account automatically
-                # Name fallback: use email hints if Google didn't return names
-                if not given_name:
-                    hint = extract_name_hint_from_email(google_email)
-                    given_name = hint["first_initial"]
-                    family_name = hint["last_name"]
-
-                user = Account(
-                    email=google_email,
-                    google_id=google_id,
-                    first_name=given_name,
-                    last_name=family_name,
-                    avatar_url=avatar_url,
-                    role=UserRole.STUDENT,  # default — admin promotes later
-                    is_active=True,
-                    # hashed_password stays NULL — no credential login for this user
-                )
-                self.db.add(user)
-                await self.db.flush()  # get user.id without committing
-
-                self.db.add(
-                    Student(
-                        user_id=user.id,
-                        student_id=f"oauth-{google_id[:12]}",
-                        program="N/A",
-                        level="N/A",
-                        group=None,
-                    )
-                )
-                await self.db.flush()
-                is_new_user = True
-
+                # Signup is disabled for OAuth
                 await self._log(
-                    ActionType.ACCOUNT_CREATED,
-                    user_id=user.id,
-                    resource_id=str(user.id),
-                    details=f"Auto-created via Google OAuth: {google_email}",
+                    ActionType.LOGIN_FAILED,
+                    details=f"OAuth login attempt for non-existent email: {google_email}",
                     ip=ip_address,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No account found with this institutional email. Please contact the administrator.",
                 )
 
         # ── Check account is active ───────────────────────────────────────────

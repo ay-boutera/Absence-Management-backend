@@ -11,7 +11,9 @@ Why a service layer?
     - Logic can be reused across multiple routers
 """
 
+import re
 import secrets
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
@@ -40,9 +42,11 @@ from app.helpers.security import (
     decode_token,
 )
 from app.helpers.email import validate_esi_email
-from app.services.redis_service import RedisService
 from app.services.email_service import send_password_reset_email
 from app.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -50,7 +54,6 @@ class AuthService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.redis = RedisService()
 
     # ── Internal: Audit Log Helper ────────────────────────────────────────────
     async def _log(
@@ -185,6 +188,7 @@ class AuthService:
         data: AccountCreate,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
+        allow_full_firstname_email: bool = False,
     ) -> Account:
         """
         Create a new credential-based user account.
@@ -193,7 +197,19 @@ class AuthService:
         3. Hashes password
         4. Saves user to DB
         """
-        validate_esi_email(data.email)
+        if allow_full_firstname_email:
+            email = data.email.strip().lower()
+            loose_pattern = re.compile(r"^[a-z]+\.[a-z]+(-[a-z]+)*@esi-sba\.dz$")
+            if not loose_pattern.match(email):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Access is restricted to ESI-SBA institutional accounts. "
+                        "Your email must follow the format: first.last@esi-sba.dz "
+                    ),
+                )
+        else:
+            validate_esi_email(data.email)
 
         # 2. Duplicate check
         result = await self.db.execute(select(Account).where(Account.email == data.email))
@@ -513,13 +529,8 @@ class AuthService:
         user: Account,
         ip_address: Optional[str] = None,
     ) -> None:
-        """
-        Invalidate both tokens by adding them to the Redis blacklist.
-        After this, neither token is usable — even if they haven't expired yet.
-        """
-        await self.redis.blacklist_token(access_token)
-        if refresh_token:
-            await self.redis.blacklist_token(refresh_token)
+        # Tokens are no longer blacklisted (Redis removed)
+        pass
 
         await self._log(
             ActionType.LOGOUT,
@@ -544,18 +555,9 @@ class AuthService:
                 detail="Invalid token type.",
             )
 
-        # Check it hasn't been revoked
-        if await self.redis.is_token_blacklisted(refresh_token):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token has been revoked.",
-            )
-
+        # Token rotation is disabled (Redis removed)
         user_id = payload.get("sub")
         role = payload.get("role")
-
-        # Blacklist the old refresh token (token rotation)
-        await self.redis.blacklist_token(refresh_token)
 
         # Issue new tokens
         token_data = {"sub": user_id, "role": role}
@@ -591,6 +593,30 @@ class AuthService:
             # secrets.token_urlsafe(32) = 43 URL-safe base64 characters
             raw_token = secrets.token_urlsafe(32)
 
+            try:
+                full_name = f"{user.first_name} {user.last_name}"
+                email_sent = await send_password_reset_email(
+                    str(user.email), full_name, raw_token
+                )
+            except Exception:
+                logger.exception(
+                    "Password reset email delivery failed for user_id=%s", user.id
+                )
+                return
+
+            if not email_sent:
+                logger.warning(
+                    "Password reset email not sent for user_id=%s", user.id
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "Password reset email could not be delivered right now. "
+                        "Please verify your email address and try again in a few minutes."
+                    ),
+                )
+
+            # Persist token only after successful email dispatch.
             reset_token = PasswordResetToken(
                 user_id=user.id,
                 token=raw_token,
@@ -598,10 +624,6 @@ class AuthService:
                 + timedelta(minutes=settings.RESET_TOKEN_EXPIRE_MINUTES),
             )
             self.db.add(reset_token)
-
-            # Send the email asynchronously
-            full_name = f"{user.first_name} {user.last_name}"
-            await send_password_reset_email(user.email, full_name, raw_token)
 
             await self._log(
                 ActionType.PASSWORD_RESET_REQUESTED,

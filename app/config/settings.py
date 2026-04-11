@@ -16,9 +16,6 @@ class Settings(BaseSettings):
     # ── CSRF ──────────────────────────────────────────────────────────────────
     CSRF_SECRET_KEY: str
 
-    # ── Redis (token blacklist) ────────────────────────────────────────────────
-    REDIS_URL: str = "redis://localhost:6379/0"
-    USE_REDIS: bool = True
 
     # ── Google OAuth2 ──────────────────────────────────────────────────────────
     #   Get these from: https://console.cloud.google.com/apis/credentials
@@ -43,7 +40,6 @@ class Settings(BaseSettings):
 
     # ── App ───────────────────────────────────────────────────────────────────
     APP_NAME: str = "AMS - Absence Management System"
-    DEBUG: bool = False
     FRONTEND_URL: str = "http://localhost:5173"
     CORS_ALLOW_ALL: bool = False
 
@@ -54,7 +50,7 @@ class Settings(BaseSettings):
     SESSION_INACTIVITY_MINUTES: int = 30
 
     # ── Environment ───────────────────────────────────────────────────────────
-    ENVIRONMENT: str = "development"  # "development" or "production"
+    ENVIRONMENT: str = "production"  # "development" or "production"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

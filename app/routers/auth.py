@@ -6,7 +6,7 @@ Both login methods share the same cookie infrastructure:
     - On logout  → clear_auth_cookies() removes them
     - /auth/me   → works regardless of how the user logged in
 
-Credential endpoints  (existing):
+Credential endpoints:
     POST  /api/v1/auth/login                    FR-01
     POST  /api/v1/auth/logout                   FR-01
     POST  /api/v1/auth/refresh                  FR-01
@@ -15,7 +15,7 @@ Credential endpoints  (existing):
     POST  /api/v1/auth/change-password
     GET   /api/v1/auth/me
 
-Google OAuth endpoints  (new):
+Google OAuth endpoints:
     GET   /api/v1/auth/google                   → returns Google consent URL
     GET   /api/v1/auth/google/callback          → Google redirects here after login
 
@@ -25,10 +25,24 @@ Frontend flow for OAuth:
     3. Frontend does: window.location.href = authorization_url
     4. Google shows consent screen, user approves
     5. Google redirects to GET /auth/google/callback?code=...&state=...
-    6. Server validates, sets HttpOnly cookies, redirects to frontend dashboard
+    6. Server validates state from SESSION (no Redis needed), sets cookies,
+        redirects to frontend dashboard
+
+STATE STORAGE — why session cookies instead of Redis:
+    The OAuth `state` parameter is a short-lived CSRF token that only needs
+    to survive the ~seconds between steps 2 and 5 above.
+    Storing it in a signed session cookie (SessionMiddleware) is:
+        ✓ stateless on the server side — no Redis / DB required
+        ✓ cryptographically signed — cannot be forged by the client
+        ✓ automatically scoped to the user's browser
 """
 
-from fastapi import APIRouter, Depends, Request, Response, status
+import base64
+import hashlib
+import hmac
+import secrets
+import time
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
@@ -44,6 +58,7 @@ from app.schemas import (
     OAuthLoginResponse,
     AccountResponse,
 )
+from app.db import get_db
 from app.services.auth_service import AuthService
 from app.services.oauth_service import OAuthService
 from app.helpers.security import (
@@ -61,9 +76,61 @@ from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+# Session key used to store the OAuth state token
+_OAUTH_STATE_SESSION_KEY = "oauth_state"
+_OAUTH_STATE_MAX_AGE_SECONDS = 600
+
+
+def _build_signed_oauth_state() -> str:
+    """Create a short-lived, signed OAuth state token.
+
+    Format: <nonce>.<issued_at_unix>.<signature_b64url>
+    Signature: HMAC-SHA256(secret_key, "<nonce>.<issued_at_unix>")
+    """
+    nonce = secrets.token_urlsafe(32)
+    issued_at = str(int(time.time()))
+    payload = f"{nonce}.{issued_at}"
+
+    signature = hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    signature_b64 = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+
+    return f"{payload}.{signature_b64}"
+
+
+def _is_valid_signed_oauth_state(state: str) -> bool:
+    """Validate signature + expiry for a stateless OAuth state token."""
+    try:
+        nonce, issued_at_str, received_sig_b64 = state.split(".", 2)
+        if not nonce or not issued_at_str or not received_sig_b64:
+            return False
+
+        issued_at = int(issued_at_str)
+        now = int(time.time())
+
+        if issued_at > now or (now - issued_at) > _OAUTH_STATE_MAX_AGE_SECONDS:
+            return False
+
+        payload = f"{nonce}.{issued_at_str}"
+        expected_sig = hmac.new(
+            settings.SECRET_KEY.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        expected_sig_b64 = (
+            base64.urlsafe_b64encode(expected_sig).decode("ascii").rstrip("=")
+        )
+
+        return secrets.compare_digest(expected_sig_b64, received_sig_b64)
+    except Exception:
+        return False
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CREDENTIAL AUTH ENDPOINTS  (unchanged from original)
+# CREDENTIAL AUTH ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -80,7 +147,6 @@ async def login(
 ):
     """
     FR-01: Authenticate with email (or student matricule) + password.
-    The email must be in ESI-SBA format: firstletter.lastname@esi-sba.dz
     On success sets access_token, refresh_token, csrf_token HttpOnly cookies.
     """
     service = AuthService(db)
@@ -108,7 +174,7 @@ async def logout(
     current_user: Account = Depends(require_active_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Blacklists both tokens in Redis and clears all auth cookies."""
+    """Blacklists both tokens and clears all auth cookies."""
     validate_csrf_token(request)
     access_token = get_token_from_cookie(request, ACCESS_COOKIE_NAME)
     refresh_token = get_token_from_cookie(request, REFRESH_COOKIE_NAME)
@@ -133,8 +199,6 @@ async def refresh_token(
     db: AsyncSession = Depends(get_db),
 ):
     """Exchange a valid refresh token for a new access + refresh token pair."""
-    from fastapi import HTTPException
-
     refresh_tok = get_token_from_cookie(request, REFRESH_COOKIE_NAME)
     if not refresh_tok:
         raise HTTPException(
@@ -160,7 +224,6 @@ async def request_password_reset(
 ):
     """
     FR-04 Step 1 — always returns 200 OK to prevent user enumeration.
-    Sends reset email if the account exists and has a password set.
     """
     service = AuthService(db)
     await service.request_password_reset(
@@ -203,8 +266,6 @@ async def change_password(
     validate_csrf_token(request)
 
     if not current_user.hashed_password:
-        from fastapi import HTTPException
-
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Your account uses Google login. There is no password to change.",
@@ -221,14 +282,13 @@ async def change_password(
 async def get_current_user_info(current_user: Account = Depends(require_active_user)):
     """
     Returns the logged-in user's profile.
-    The React frontend calls this on startup to restore auth state.
     Works for both credential and OAuth sessions.
     """
     return current_user
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GOOGLE OAUTH ENDPOINTS  (new)
+# GOOGLE OAUTH ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -237,19 +297,34 @@ async def get_current_user_info(current_user: Account = Depends(require_active_u
     response_model=OAuthStateResponse,
     summary="Get Google OAuth authorization URL",
 )
-async def google_login(db: AsyncSession = Depends(get_db)):
+async def google_login(
+    request: Request,  # ← ADDED: needed to write to session
+    db: AsyncSession = Depends(get_db),
+):
     """
     Step 1 of the Google OAuth flow.
 
-    Returns { authorization_url } — the frontend redirects the browser here.
-    Stores a random 'state' token in Redis (10 min TTL) for CSRF protection.
+    Generates a cryptographically random `state` token, saves it in the
+    signed session cookie (no Redis needed), then returns the Google
+    authorization URL to the frontend.
 
     Frontend usage:
         const { authorization_url } = await api.get('/auth/google')
         window.location.href = authorization_url
     """
-    service = OAuthService(db)
-    url = await service.get_authorization_url()
+    # Generate a fresh, signed state token for this login attempt.
+    # Session remains the primary validation path, signed token is a
+    # safe fallback when browsers block third-party session cookies.
+    state = _build_signed_oauth_state()
+
+    # Persist it in the session cookie — survives the browser round-trip to
+    # Google and back. SessionMiddleware signs the cookie so it can't be
+    # tampered with.
+    request.session[_OAUTH_STATE_SESSION_KEY] = state
+
+    # Ask OAuthService to build the URL using OUR state (not its own)
+    oauth_service = OAuthService(db)
+    url = await oauth_service.get_authorization_url(state)
     return OAuthStateResponse(authorization_url=url)
 
 
@@ -268,35 +343,48 @@ async def google_callback(
     Step 2 of the Google OAuth flow — Google redirects here with ?code=&state=
 
     What happens:
-        1. Validates state against Redis (CSRF check)
-        2. Exchanges code for Google tokens
-        3. Fetches Google profile, validates email is @esi-sba.dz
-        4. Finds or creates the user in our DB
-        5. Issues our own JWT tokens, sets HttpOnly cookies
-        6. Redirects the browser to the React frontend dashboard
+        1. Reads stored state from the session cookie
+        2. Compares it with the `state` param returned by Google (CSRF check)
+        3. Exchanges code for Google tokens
+        4. Fetches Google profile, validates email is @esi-sba.dz
+        5. Finds or creates the user in our DB
+        6. Issues our own JWT tokens, sets HttpOnly cookies
+        7. Redirects the browser to the React frontend dashboard
 
     The redirect carries a query param for the frontend:
         ?new=true  → first-time login (show welcome message)
         ?new=false → returning user
-
-    This is a browser redirect (not a JSON API call), so the response
-    is a 302 RedirectResponse, not JSON.
     """
+    # ── Step 1: Retrieve and immediately consume the stored state ─────────────
+    # Using .pop() so the state can only be used once (replay protection).
+    stored_state = request.session.pop(_OAUTH_STATE_SESSION_KEY, None)
+    session_state_valid = bool(
+        stored_state and secrets.compare_digest(stored_state, state)
+    )
+    signed_state_valid = _is_valid_signed_oauth_state(state)
+
+    if not session_state_valid and not signed_state_valid:
+        raise HTTPException(400, "Invalid OAuth state. Please try logging in again.")
+
+    # ── Steps 3-6: Delegate to OAuthService ──────────────────────────────────
     service = OAuthService(db)
     user, access_token, refresh_token, is_new_user = await service.handle_callback(
         code=code,
-        state=state,
         ip_address=get_client_ip(request),
     )
 
-    # Build redirect response to the frontend
-    redirect_url = f"{settings.FRONTEND_URL}/{user.role.value}?new={str(is_new_user).lower()}"
+    # ── Step 7: Redirect to frontend with auth cookies ───────────────────────
+    from urllib.parse import quote
+    full_name = quote(f"{user.first_name} {user.last_name}")
+    avatar = quote(user.avatar_url or "")
+    
     redirect_url = (
-        f"{settings.FRONTEND_URL}/{user.role.value}?new={str(is_new_user).lower()}"
+        f"{settings.FRONTEND_URL}/auth/callback"
+        f"?name={full_name}"
+        f"&avatar={avatar}"
+        f"&role={user.role.value}"
     )
     redirect_response = RedirectResponse(url=redirect_url, status_code=302)
-
-    # Set auth cookies ON the redirect response (not on 'response')
     set_auth_cookies(redirect_response, access_token, refresh_token)
 
     return redirect_response
