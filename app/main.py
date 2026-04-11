@@ -72,7 +72,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.SECRET_KEY,  # reuse your existing secret
-    same_site="lax",  # required: allows cookie on cross-site redirect
+    same_site="none" if settings.ENVIRONMENT == "production" else "lax",
     https_only=settings.ENVIRONMENT == "production",
     max_age=600,  # 10 minutes — enough time to complete OAuth
 )

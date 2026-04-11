@@ -154,13 +154,16 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
     # Generate a CSRF token
     csrf_token = secrets.token_hex(32)
 
+    is_production = settings.ENVIRONMENT == "production"
+    same_site_value = "none" if is_production else "lax"
+
     # Access token cookie — short-lived, HttpOnly
     response.set_cookie(
         key=ACCESS_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        secure=settings.ENVIRONMENT == "production",  # Allow HTTP in dev mode
-        samesite=None,
+        secure=is_production,  # Allow HTTP in dev mode
+        samesite=same_site_value,
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
@@ -170,8 +173,8 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         key=REFRESH_COOKIE_NAME,
         value=refresh_token,
         httponly=True,
-        secure=settings.ENVIRONMENT == "production",
-        samesite=None,
+        secure=is_production,
+        samesite=same_site_value,
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         path="/",
     )
@@ -181,8 +184,8 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         key=CSRF_COOKIE_NAME,
         value=csrf_token,
         httponly=False,  # JS MUST be able to read this
-        secure=settings.ENVIRONMENT == "production",
-        samesite=None,
+        secure=is_production,
+        samesite=same_site_value,
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
