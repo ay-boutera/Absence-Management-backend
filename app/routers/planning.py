@@ -61,14 +61,24 @@ REQUIRED_COLUMNS = [
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _decode_utf8(content: bytes) -> str:
+    """Decode bytes as UTF-8, stripping BOM if present (LibreOffice/Excel habit)."""
     try:
-        return content.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "Format CSV invalide", "detail": "Encodage non-UTF-8"},
-        ) from exc
+        return content.decode("utf-8-sig")  # utf-8-sig strips the BOM automatically
+    except UnicodeDecodeError:
+        try:
+            return content.decode("latin-1")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "Format CSV invalide", "detail": "Encodage non reconnu (attendu UTF-8)"},
+            ) from exc
 
+
+def _detect_delimiter(first_line: str) -> str:
+    """Return ',' or ';' based on whichever appears more in the header row."""
+    if first_line.count(";") > first_line.count(","):
+        return ";"
+    return ","
 
 def _parse_time(raw: str) -> Optional[time]:
     """Return a time object from HH:MM string, or None if invalid."""
@@ -147,18 +157,25 @@ async def import_planning_csv(
         )
 
     csv_text = "\n".join(filtered_lines)
-    stream = io.StringIO(csv_text)
-    reader = csv.DictReader(stream, delimiter=",")
 
-    # Validate header
-    fieldnames = reader.fieldnames or []
-    missing_cols = [c for c in REQUIRED_COLUMNS if c not in fieldnames]
+    # Auto-detect delimiter (comma vs semicolon — LibreOffice French locale)
+    delimiter = _detect_delimiter(filtered_lines[0])
+
+    stream = io.StringIO(csv_text)
+    reader = csv.DictReader(stream, delimiter=delimiter)
+
+    # Validate header — strip whitespace from fieldnames for robustness
+    raw_fieldnames = [f.strip() for f in (reader.fieldnames or [])]
+    reader.fieldnames = raw_fieldnames  # type: ignore[assignment]
+    missing_cols = [c for c in REQUIRED_COLUMNS if c not in raw_fieldnames]
     if missing_cols:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "Format CSV invalide",
-                "detail": f"Colonnes manquantes: {missing_cols}",
+                "detail": f"Colonnes manquantes: {missing_cols}. "
+                          f"Délimiteur détecté: '{delimiter}'. "
+                          f"En-tête reçu: {raw_fieldnames}",
             },
         )
 
