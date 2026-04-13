@@ -58,7 +58,6 @@ GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 GOOGLE_SCOPES = "openid email profile"
 
 
-
 class OAuthService:
 
     def __init__(self, db: AsyncSession):
@@ -93,7 +92,6 @@ class OAuthService:
         self.db.add(log)
 
     # ── Step 1: Generate authorization URL ───────────────────────────────────
-
 
     async def get_authorization_url(self, state: str) -> str:
         async with self._make_client() as client:

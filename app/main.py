@@ -25,7 +25,7 @@ from starlette.middleware.sessions import SessionMiddleware  # ← NEW
 from app.middlewares.security import security_headers
 from app.config import settings
 from app.db import engine
-from app.routers import auth, import_export, teachers, users
+from app.routers import auth, import_export, planning, teachers, users
 from app.services.email_service import log_smtp_health_check
 
 
@@ -97,6 +97,7 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(import_export.router, prefix="/api/v1")
 app.include_router(teachers.router, prefix="/api/v1")
+app.include_router(planning.router, prefix="/api/v1")
 
 
 # ── Health Check ─────────────────────────────────────────────────────────────

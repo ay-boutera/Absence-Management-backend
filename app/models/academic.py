@@ -4,7 +4,6 @@ from enum import Enum
 
 from sqlalchemy import (
     Column,
-    Date,
     DateTime,
     Enum as SQLAlchemyEnum,
     ForeignKey,
@@ -12,6 +11,7 @@ from sqlalchemy import (
     JSON,
     String,
     Time,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -50,6 +50,50 @@ class ImportExportDataType(str, Enum):
     JUSTIFICATIONS = "justifications"
 
 
+class AcademicYear(str, Enum):
+    CP_1 = "1CP"
+    CP_2 = "2CP"
+    CS_1 = "1CS"
+    CS_2 = "2CS"
+    CS_3 = "3CS"
+
+
+class SectionEnum(str, Enum):
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+    E = "E"
+    F = "F"
+    G = "G"
+    H = "H"
+    I = "I"
+    J = "J"
+    K = "K"
+    L = "L"
+    M = "M"
+    N = "N"
+    O = "O"
+    P = "P"
+    Q = "Q"
+    R = "R"
+    S = "S"
+    T = "T"
+    U = "U"
+    V = "V"
+    W = "W"
+    X = "X"
+    Y = "Y"
+    Z = "Z"
+
+
+class SpecialityEnum(str, Enum):
+    ISI = "ISI"
+    SIW = "SIW"
+    IASD = "IASD"
+    CYS = "CyS"
+
+
 class Student(Base):
     __tablename__ = "students"
 
@@ -83,8 +127,6 @@ class Module(Base):
     code = Column(String(50), unique=True, nullable=False, index=True)
     nom = Column(String(255), nullable=False)
 
-    planning_sessions = relationship("PlanningSession", back_populates="module")
-
 
 class Salle(Base):
     __tablename__ = "salles"
@@ -92,38 +134,60 @@ class Salle(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code = Column(String(50), unique=True, nullable=False, index=True)
 
-    planning_sessions = relationship("PlanningSession", back_populates="salle_ref")
 
-
+# ── New PlanningSession: weekly recurring timetable ────────────────────────────
 class PlanningSession(Base):
+    """
+    Represents a recurring weekly session in the timetable.
+
+    Upsert key (UniqueConstraint uq_planning_session):
+        year, section, speciality, semester, day, time_start, type, subject, group, teacher_id
+    """
+
     __tablename__ = "planning_sessions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    id_seance = Column(String(100), unique=True, nullable=False, index=True)
-    code_module = Column(
-        String(50),
-        ForeignKey("modules.code", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    type_seance = Column(SQLAlchemyEnum(SessionType), nullable=False)
-    date = Column(Date, nullable=False)
-    heure_debut = Column(Time, nullable=False)
-    heure_fin = Column(Time, nullable=False)
-    salle = Column(
-        String(50),
-        ForeignKey("salles.code", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    id_enseignant = Column(
+
+    # Academic context
+    year = Column(SQLAlchemyEnum(AcademicYear, values_callable=lambda obj: [e.value for e in obj]), nullable=False)        # 1CP,2CP,1CS,2CS,3CS
+    section = Column(SQLAlchemyEnum(SectionEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=True)       # A-Z
+    speciality = Column(SQLAlchemyEnum(SpecialityEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=True) # ISI,SIW,IASD,CyS
+    semester = Column(String(2), nullable=False)                       # S1 | S2
+
+    # Schedule
+    day = Column(String(20), nullable=False)           # Dimanche…Jeudi
+    time_start = Column(Time, nullable=False)          # HH:MM
+    time_end = Column(Time, nullable=False)            # HH:MM
+
+    # Session content
+    type = Column(String(20), nullable=False)          # Cours,TD,TP,TD/TP,Cours/TP,…
+    subject = Column(String(255), nullable=False)      # module name (free text)
+    room = Column(String(100), nullable=True)          # SALLE 01, Amphi. D, etc.
+    group = Column(String(20), nullable=True)          # Gx
+
+    # Teacher (nullable — e.g. TBD sessions)
+    teacher_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="RESTRICT"),
-        nullable=False,
+        ForeignKey("teacher_users.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
 
-    module = relationship("Module", back_populates="planning_sessions")
-    salle_ref = relationship("Salle", back_populates="planning_sessions")
-    absences = relationship("Absence", back_populates="session")
+    teacher = relationship("Teacher", foreign_keys=[teacher_id])
+
+    __table_args__ = (
+        UniqueConstraint(
+            "year", "section", "speciality", "semester", "day",
+            "time_start", "type", "subject", "group", "teacher_id",
+            name="uq_planning_session",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PlanningSession {self.year}/{self.section} {self.day} "
+            f"{self.time_start}–{self.time_end} {self.subject}>"
+        )
 
 
 class Absence(Base):
@@ -145,7 +209,7 @@ class Absence(Base):
     statut_justificatif = Column(String(50), nullable=True)
 
     student = relationship("Student", back_populates="absences")
-    session = relationship("PlanningSession", back_populates="absences")
+    session = relationship("PlanningSession")
 
 
 class ImportHistory(Base):

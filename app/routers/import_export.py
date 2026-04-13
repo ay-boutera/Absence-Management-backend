@@ -1,13 +1,12 @@
 import csv
 import io
-import uuid
-from datetime import datetime, date as dt_date
+from datetime import datetime
 from typing import Optional, Sequence
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import EmailStr, TypeAdapter, ValidationError
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,10 +22,6 @@ from app.models.academic import (
     ImportExportDataType,
     ImportExportFileType,
     ImportExportLog,
-    Module,
-    PlanningSession,
-    Salle,
-    SessionType,
     Student as AcademicStudent,
 )
 from app.models.user import Account, Student as StudentProfile, UserRole
@@ -354,227 +349,9 @@ async def import_students_csv(
     )
 
 
-@router.post(
-    "/import/planning",
-    response_model=ImportResponse,
-    summary="Import planning sessions from CSV",
-)
-async def import_planning_csv(
-    file: UploadFile = File(...),
-    current_user: Account = Depends(require_can_import_data_bearer),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Import planning sessions CSV with partial import and referential checks.
+# NOTE: POST /import/planning is now handled by app.routers.planning
+# (see routers/planning.py — full validation + upsert semantics)
 
-    Expected UTF-8 comma-delimited columns:
-    id_seance, code_module, type_seance, date, heure_debut, heure_fin, salle, id_enseignant
-
-    `type_seance` must be one of: cours, TD, TP, examen.
-    """
-    raw = await file.read()
-    content = _decode_utf8(raw)
-
-    expected_columns = [
-        "id_seance",
-        "code_module",
-        "type_seance",
-        "date",
-        "heure_debut",
-        "heure_fin",
-        "salle",
-        "id_enseignant",
-    ]
-    reader = _parse_csv(content, expected_columns)
-
-    type_mapping = {
-        "cours": SessionType.COURS,
-        "td": SessionType.TD,
-        "tp": SessionType.TP,
-        "examen": SessionType.EXAMEN,
-    }
-
-    error_report: list[ImportErrorItem] = []
-    imported_count = 0
-    total_rows = 0
-
-    for line_number, row in enumerate(reader, start=2):
-        if not any((value or "").strip() for value in row.values()):
-            continue
-
-        total_rows += 1
-
-        id_seance = (row.get("id_seance") or "").strip()
-        code_module = (row.get("code_module") or "").strip()
-        type_raw = (row.get("type_seance") or "").strip().lower()
-        date_raw = (row.get("date") or "").strip()
-        heure_debut_raw = (row.get("heure_debut") or "").strip()
-        heure_fin_raw = (row.get("heure_fin") or "").strip()
-        salle_raw = (row.get("salle") or "").strip()
-        id_enseignant_raw = (row.get("id_enseignant") or "").strip()
-
-        if not id_seance:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="id_seance",
-                    reason="id_seance is required",
-                )
-            )
-            continue
-
-        try:
-            teacher_uuid = uuid.UUID(id_enseignant_raw)
-        except ValueError:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="id_enseignant",
-                    reason=f"Ligne {line_number} : id_enseignant {id_enseignant_raw} introuvable",
-                )
-            )
-            continue
-
-        if type_raw not in type_mapping:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="type_seance",
-                    reason="type_seance must be one of: cours, TD, TP, examen",
-                )
-            )
-            continue
-
-        try:
-            parsed_date = datetime.strptime(date_raw, "%Y-%m-%d").date()
-        except ValueError:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="date",
-                    reason="date must be in YYYY-MM-DD format",
-                )
-            )
-            continue
-
-        try:
-            parsed_start = datetime.strptime(heure_debut_raw, "%H:%M").time()
-        except ValueError:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="heure_debut",
-                    reason="heure_debut must be in HH:MM format",
-                )
-            )
-            continue
-
-        try:
-            parsed_end = datetime.strptime(heure_fin_raw, "%H:%M").time()
-        except ValueError:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="heure_fin",
-                    reason="heure_fin must be in HH:MM format",
-                )
-            )
-            continue
-
-        teacher_count = (
-            await db.execute(
-                select(func.count())
-                .select_from(Account)
-                .where(and_(Account.id == teacher_uuid, Account.role == UserRole.TEACHER))
-            )
-        ).scalar_one()
-        if teacher_count == 0:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="id_enseignant",
-                    reason=f"Ligne {line_number} : id_enseignant {id_enseignant_raw} introuvable",
-                )
-            )
-            continue
-
-        module_result = await db.execute(select(Module).where(Module.code == code_module))
-        module = module_result.scalar_one_or_none()
-        if not module:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="code_module",
-                    reason=f"Ligne {line_number} : code_module {code_module} introuvable",
-                )
-            )
-            continue
-
-        salle_result = await db.execute(select(Salle).where(Salle.code == salle_raw))
-        salle = salle_result.scalar_one_or_none()
-        if not salle:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="salle",
-                    reason=f"Ligne {line_number} : salle {salle_raw} introuvable",
-                )
-            )
-            continue
-
-        session_result = await db.execute(
-            select(PlanningSession).where(PlanningSession.id_seance == id_seance)
-        )
-        session = session_result.scalar_one_or_none()
-        if session is None:
-            session = PlanningSession(
-                id_seance=id_seance,
-                code_module=code_module,
-                type_seance=type_mapping[type_raw],
-                date=parsed_date,
-                heure_debut=parsed_start,
-                heure_fin=parsed_end,
-                salle=salle_raw,
-                id_enseignant=teacher_uuid,
-            )
-            db.add(session)
-        else:
-            await db.execute(
-                update(PlanningSession)
-                .where(PlanningSession.id == session.id)
-                .values(
-                    code_module=code_module,
-                    type_seance=type_mapping[type_raw],
-                    date=parsed_date,
-                    heure_debut=parsed_start,
-                    heure_fin=parsed_end,
-                    salle=salle_raw,
-                    id_enseignant=teacher_uuid,
-                )
-            )
-
-        imported_count += 1
-
-    history = ImportExportLog(
-        performed_by_id=current_user.id,
-        action=ImportExportAction.IMPORT,
-        file_type=ImportExportFileType.CSV,
-        file_name=file.filename or "planning.csv",
-        data_type=ImportExportDataType.SCHEDULE,
-        row_count=total_rows,
-        success_count=imported_count,
-        error_count=len(error_report),
-        error_details={"error_report": [item.model_dump() for item in error_report]},
-    )
-    db.add(history)
-    await db.flush()
-
-    return ImportResponse(
-        imported=imported_count,
-        errors=len(error_report),
-        error_report=error_report,
-        history_id=uuid.UUID(str(history.id)),
-    )
 
 
 @router.get(
@@ -582,10 +359,6 @@ async def import_planning_csv(
     summary="Export absences as CSV",
 )
 async def export_absences_csv(
-    filiere: Optional[str] = Query(default=None),
-    code_module: Optional[str] = Query(default=None),
-    date_from: Optional[dt_date] = Query(default=None),
-    date_to: Optional[dt_date] = Query(default=None),
     matricule_etudiant: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1000),
@@ -593,11 +366,10 @@ async def export_absences_csv(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Export absences to CSV with filters and pagination.
+    Export absences to CSV.
 
     CSV columns:
-    matricule, nom_etudiant, prenom_etudiant, filiere, groupe, code_module,
-    nom_module, type_seance, date_seance, heure_debut, heure_fin, statut_justificatif
+    matricule, nom_etudiant, prenom_etudiant, filiere, groupe, statut_justificatif
     """
     base_query = (
         select(
@@ -606,34 +378,28 @@ async def export_absences_csv(
             AcademicStudent.prenom,
             AcademicStudent.filiere,
             AcademicStudent.groupe,
-            Module.code,
-            Module.nom,
-            PlanningSession.type_seance,
-            PlanningSession.date,
-            PlanningSession.heure_debut,
-            PlanningSession.heure_fin,
             Absence.statut_justificatif,
         )
         .select_from(Absence)
         .join(AcademicStudent, AcademicStudent.matricule == Absence.student_matricule)
-        .join(PlanningSession, PlanningSession.id == Absence.planning_session_id)
-        .join(Module, Module.code == PlanningSession.code_module)
     )
 
     filters = []
-    if filiere:
-        filters.append(AcademicStudent.filiere == filiere)
-    if code_module:
-        filters.append(Module.code == code_module)
-    if date_from:
-        filters.append(PlanningSession.date >= date_from)
-    if date_to:
-        filters.append(PlanningSession.date <= date_to)
     if matricule_etudiant:
         filters.append(AcademicStudent.matricule == matricule_etudiant)
 
     if getattr(current_user.role, "value", str(current_user.role)) == UserRole.TEACHER.value:
-        filters.append(PlanningSession.id_enseignant == current_user.id)
+        # Teachers see absences for their own sessions only
+        from app.models.user import Teacher as TeacherModel
+        from app.models.academic import PlanningSession as PS
+        teacher_result = await db.execute(
+            select(TeacherModel).where(TeacherModel.user_id == current_user.id)
+        )
+        teacher = teacher_result.scalar_one_or_none()
+        if teacher:
+            base_query = base_query.join(
+                PS, PS.id == Absence.planning_session_id
+            ).where(PS.teacher_id == teacher.id)
 
     if filters:
         base_query = base_query.where(and_(*filters))
@@ -653,12 +419,6 @@ async def export_absences_csv(
             "prenom_etudiant",
             "filiere",
             "groupe",
-            "code_module",
-            "nom_module",
-            "type_seance",
-            "date_seance",
-            "heure_debut",
-            "heure_fin",
             "statut_justificatif",
         ]
     )
@@ -671,13 +431,7 @@ async def export_absences_csv(
                 row[2],
                 row[3],
                 row[4],
-                row[5],
-                row[6],
-                row[7].value,
-                row[8].isoformat() if row[8] else "",
-                row[9].strftime("%H:%M") if row[9] else "",
-                row[10].strftime("%H:%M") if row[10] else "",
-                row[11] or "",
+                row[5] or "",
             ]
         )
 
