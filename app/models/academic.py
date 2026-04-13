@@ -29,6 +29,7 @@ class SessionType(str, Enum):
 class ImportType(str, Enum):
     STUDENTS = "students"
     PLANNING = "planning"
+    TEACHERS = "teachers"
 
 
 class ImportExportAction(str, Enum):

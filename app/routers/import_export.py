@@ -86,9 +86,9 @@ async def import_students_csv(
 ):
     """
     Import students with ALL-OR-NOTHING semantics.
-    - Validates every row first
-    - If any row is invalid, nothing is saved
-    - Returns detailed row-level errors with row data
+    - Validate all rows before any write
+    - Abort whole import on any validation/duplicate error
+    - Duplicate check key: matricule already existing in DB
 
     Expected UTF-8 comma-delimited columns:
     matricule, nom, prenom, filiere, niveau, groupe, email
@@ -108,28 +108,28 @@ async def import_students_csv(
     reader = _parse_csv(content, expected_columns)
 
     error_report: list[ImportErrorItem] = []
-    total_rows = 0
     parsed_rows: list[tuple[int, dict[str, str]]] = []
+    total_rows = 0
     seen_matricules: set[str] = set()
-    seen_emails: set[str] = set()
 
-    for line_number, row in enumerate(reader, start=2):
+    for line_number, row in enumerate(reader, start=1):
         if not any((value or "").strip() for value in row.values()):
             continue
 
         total_rows += 1
-        cleaned_row = {column: (row.get(column) or "").strip() for column in expected_columns}
+        cleaned_row = {
+            column: (row.get(column) or "").strip() for column in expected_columns
+        }
 
-        missing_fields = [field for field, value in cleaned_row.items() if not value]
-        for field in missing_fields:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field=field,
-                    reason=f"{field} is required",
-                    row_data=cleaned_row,
+        for field, value in cleaned_row.items():
+            if not value:
+                error_report.append(
+                    ImportErrorItem(
+                        line=line_number,
+                        field=field,
+                        reason=f"{field} est requis",
+                    )
                 )
-            )
 
         matricule = cleaned_row["matricule"]
         if matricule:
@@ -138,8 +138,7 @@ async def import_students_csv(
                     ImportErrorItem(
                         line=line_number,
                         field="matricule",
-                        reason="Duplicate matricule found in file",
-                        row_data=cleaned_row,
+                        reason=f"Matricule dupliqué dans le fichier — matricule {matricule} apparaît plusieurs fois",
                     )
                 )
             else:
@@ -148,19 +147,6 @@ async def import_students_csv(
         email_value = cleaned_row["email"].lower()
         cleaned_row["email"] = email_value
         if email_value:
-            if email_value in seen_emails:
-                error_report.append(
-                    ImportErrorItem(
-                        line=line_number,
-                        field="email",
-                        reason="Duplicate email found in file",
-                        row_data=cleaned_row,
-                    )
-                )
-            else:
-                seen_emails.add(email_value)
-
-        if email_value:
             try:
                 email_adapter.validate_python(email_value)
             except (ValidationError, ValueError):
@@ -168,26 +154,13 @@ async def import_students_csv(
                     ImportErrorItem(
                         line=line_number,
                         field="email",
-                        reason="Invalid email format",
-                        row_data=cleaned_row,
+                        reason="Format email invalide",
                     )
                 )
 
         parsed_rows.append((line_number, cleaned_row))
 
-    # Stop early on format errors. Nothing has been written yet.
-    if error_report:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "message": "Import rejected: one or more rows are invalid. No data was saved.",
-                "imported": 0,
-                "errors": len(error_report),
-                "error_report": [item.model_dump() for item in error_report],
-            },
-        )
-
-    if not parsed_rows:
+    if not parsed_rows and not error_report:
         history = ImportExportLog(
             performed_by_id=current_user.id,
             action=ImportExportAction.IMPORT,
@@ -203,134 +176,110 @@ async def import_students_csv(
         await db.flush()
         return ImportResponse(imported=0, errors=0, error_report=[], history_id=history.id)
 
-    matricules = [row["matricule"] for _, row in parsed_rows]
-    emails = [row["email"] for _, row in parsed_rows]
+    matricules = [row["matricule"] for _, row in parsed_rows if row["matricule"]]
+    emails = [row["email"] for _, row in parsed_rows if row["email"]]
 
     academic_students_result = await db.execute(
         select(AcademicStudent).where(AcademicStudent.matricule.in_(matricules))
     )
-    academic_by_matricule = {student.matricule: student for student in academic_students_result.scalars().all()}
+    existing_academic_matricules = {
+        student.matricule for student in academic_students_result.scalars().all()
+    }
 
     profiles_result = await db.execute(
         select(StudentProfile)
         .options(selectinload(StudentProfile.user))
         .where(StudentProfile.student_id.in_(matricules))
     )
-    profiles_by_student_id = {profile.student_id: profile for profile in profiles_result.scalars().all()}
+    profiles_by_student_id = {
+        profile.student_id: profile for profile in profiles_result.scalars().all()
+    }
 
     accounts_result = await db.execute(
         select(Account)
         .options(selectinload(Account.student_profile))
         .where(func.lower(Account.email).in_(emails))
     )
-    accounts_by_email = {account.email.lower(): account for account in accounts_result.scalars().all()}
+    accounts_by_email = {
+        account.email.lower(): account for account in accounts_result.scalars().all()
+    }
 
-    prepared_rows: list[dict] = []
+    prepared_rows: list[dict[str, object]] = []
     for line_number, row in parsed_rows:
         matricule = row["matricule"]
         email_value = row["email"]
 
-        existing_profile = profiles_by_student_id.get(matricule)
-        account_with_email = accounts_by_email.get(email_value)
+        if matricule in existing_academic_matricules or matricule in profiles_by_student_id:
+            error_report.append(
+                ImportErrorItem(
+                    line=line_number,
+                    field="matricule",
+                    reason=f"Étudiant déjà importé — matricule {matricule} existe déjà",
+                )
+            )
+            continue
 
         selected_account: Account | None = None
         selected_profile: StudentProfile | None = None
+        account_with_email = accounts_by_email.get(email_value)
 
-        if existing_profile is not None:
-            if existing_profile.user is None:
-                error_report.append(
-                    ImportErrorItem(
-                        line=line_number,
-                        field="matricule",
-                        reason="Student profile is orphaned (no linked account).",
-                        row_data=row,
-                    )
-                )
-                continue
-            if existing_profile.user.role != UserRole.STUDENT:
-                error_report.append(
-                    ImportErrorItem(
-                        line=line_number,
-                        field="matricule",
-                        reason="Student profile is linked to a non-student account.",
-                        row_data=row,
-                    )
-                )
-                continue
-            if account_with_email is not None and account_with_email.id != existing_profile.user.id:
+        if account_with_email is not None:
+            if account_with_email.role != UserRole.STUDENT:
                 error_report.append(
                     ImportErrorItem(
                         line=line_number,
                         field="email",
-                        reason="Email is already used by another account.",
-                        row_data=row,
+                        reason=f"Email déjà utilisé — email {email_value} existe déjà",
                     )
                 )
                 continue
-            selected_account = existing_profile.user
-            selected_profile = existing_profile
-        else:
-            if account_with_email is not None:
-                if account_with_email.role != UserRole.STUDENT:
-                    error_report.append(
-                        ImportErrorItem(
-                            line=line_number,
-                            field="email",
-                            reason="Email is already used by a non-student account.",
-                            row_data=row,
-                        )
+            if (
+                account_with_email.student_profile is not None
+                and account_with_email.student_profile.student_id != matricule
+            ):
+                error_report.append(
+                    ImportErrorItem(
+                        line=line_number,
+                        field="email",
+                        reason=f"Email déjà utilisé — email {email_value} existe déjà",
                     )
-                    continue
-                if (
-                    account_with_email.student_profile is not None
-                    and account_with_email.student_profile.student_id != matricule
-                ):
-                    error_report.append(
-                        ImportErrorItem(
-                            line=line_number,
-                            field="email",
-                            reason=(
-                                "Email is already linked to another student profile "
-                                f"({account_with_email.student_profile.student_id})."
-                            ),
-                            row_data=row,
-                        )
-                    )
-                    continue
-                selected_account = account_with_email
-                selected_profile = account_with_email.student_profile
+                )
+                continue
+            selected_account = account_with_email
+            selected_profile = account_with_email.student_profile
 
         prepared_rows.append(
             {
-                "line": line_number,
                 "row": row,
-                "academic_student": academic_by_matricule.get(matricule),
                 "account": selected_account,
                 "student_profile": selected_profile,
             }
         )
 
-    # Reject everything if any row failed DB-level validation.
     if error_report:
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             content={
-                "message": "Import rejected: one or more rows are invalid. No data was saved.",
                 "imported": 0,
                 "errors": len(error_report),
-                "error_report": [item.model_dump() for item in error_report],
+                "error_report": [
+                    {
+                        "line": item.line,
+                        "field": item.field,
+                        "reason": item.reason,
+                    }
+                    for item in error_report
+                ],
             },
         )
 
-    # Apply every upsert in a single transaction scope.
-    async with db.begin_nested():
-        for item in prepared_rows:
-            row = item["row"]
-            academic_student = item["academic_student"]
-            account = item["account"]
-            student_profile = item["student_profile"]
+    try:
+        async with db.begin_nested():
+            for item in prepared_rows:
+                row = item["row"]
+                account = item["account"]
+                student_profile = item["student_profile"]
 
-            if academic_student is None:
                 academic_student = AcademicStudent(
                     matricule=row["matricule"],
                     nom=row["nom"],
@@ -341,63 +290,61 @@ async def import_students_csv(
                     email=row["email"],
                 )
                 db.add(academic_student)
-            else:
-                academic_student.nom = row["nom"]
-                academic_student.prenom = row["prenom"]
-                academic_student.filiere = row["filiere"]
-                academic_student.niveau = row["niveau"]
-                academic_student.groupe = row["groupe"]
-                academic_student.email = row["email"]
-                db.add(academic_student)
 
-            if account is None:
-                account = Account(
-                    email=row["email"],
-                    first_name=row["prenom"],
-                    last_name=row["nom"],
-                    phone=None,
-                    hashed_password=None,
-                    role=UserRole.STUDENT,
-                    is_active=True,
-                )
-                db.add(account)
-                await db.flush()
-            else:
-                account.email = row["email"]
-                account.first_name = row["prenom"]
-                account.last_name = row["nom"]
-                account.role = UserRole.STUDENT
-                db.add(account)
+                if account is None:
+                    account = Account(
+                        email=row["email"],
+                        first_name=row["prenom"],
+                        last_name=row["nom"],
+                        phone=None,
+                        hashed_password=None,
+                        role=UserRole.STUDENT,
+                        is_active=True,
+                    )
+                    db.add(account)
+                    await db.flush()
+                else:
+                    account.email = row["email"]
+                    account.first_name = row["prenom"]
+                    account.last_name = row["nom"]
+                    account.role = UserRole.STUDENT
+                    db.add(account)
 
-            if student_profile is None:
-                student_profile = StudentProfile(
-                    user_id=account.id,
-                    student_id=row["matricule"],
-                    program=row["filiere"],
-                    level=row["niveau"],
-                    group=row["groupe"],
-                )
-                db.add(student_profile)
-            else:
-                student_profile.student_id = row["matricule"]
-                student_profile.program = row["filiere"]
-                student_profile.level = row["niveau"]
-                student_profile.group = row["groupe"]
-                db.add(student_profile)
+                if student_profile is None:
+                    student_profile = StudentProfile(
+                        user_id=account.id,
+                        student_id=row["matricule"],
+                        program=row["filiere"],
+                        level=row["niveau"],
+                        group=row["groupe"],
+                    )
+                    db.add(student_profile)
+                else:
+                    student_profile.student_id = row["matricule"]
+                    student_profile.program = row["filiere"]
+                    student_profile.level = row["niveau"]
+                    student_profile.group = row["groupe"]
+                    db.add(student_profile)
 
-        history = ImportExportLog(
-            performed_by_id=current_user.id,
-            action=ImportExportAction.IMPORT,
-            file_type=ImportExportFileType.CSV,
-            file_name=file.filename or "students.csv",
-            data_type=ImportExportDataType.STUDENTS,
-            row_count=total_rows,
-            success_count=len(prepared_rows),
-            error_count=0,
-            error_details={"error_report": []},
-        )
-        db.add(history)
-        await db.flush()
+            history = ImportExportLog(
+                performed_by_id=current_user.id,
+                action=ImportExportAction.IMPORT,
+                file_type=ImportExportFileType.CSV,
+                file_name=file.filename or "students.csv",
+                data_type=ImportExportDataType.STUDENTS,
+                row_count=total_rows,
+                success_count=len(prepared_rows),
+                error_count=0,
+                error_details={"error_report": []},
+            )
+            db.add(history)
+            await db.flush()
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erreur lors de l'import des étudiants",
+        ) from exc
 
     return ImportResponse(
         imported=len(prepared_rows),

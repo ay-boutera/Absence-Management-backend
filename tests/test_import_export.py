@@ -131,14 +131,14 @@ async def test_import_students_atomic_rejects_on_any_invalid_row(
         headers=bearer_headers(admin_user),
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 409
     data = response.json()
     assert data["imported"] == 0
     assert data["errors"] == 1
     assert len(data["error_report"]) == 1
     assert data["error_report"][0]["field"] == "email"
-    assert data["error_report"][0]["line"] == 3
-    assert data["error_report"][0]["row_data"]["matricule"] == "ST002"
+    assert data["error_report"][0]["line"] == 2
+    assert data["error_report"][0]["reason"] == "Format email invalide"
 
     async with TestSessionLocal() as session:
         result = await session.execute(
@@ -147,6 +147,54 @@ async def test_import_students_atomic_rejects_on_any_invalid_row(
             )
         )
         assert result.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_import_students_rejects_existing_matricule_without_writing(
+    client: AsyncClient, admin_user: Account
+):
+    async with TestSessionLocal() as session:
+        session.add(
+            AcademicStudent(
+                matricule="ST001",
+                nom="Existing",
+                prenom="Student",
+                filiere="INFO",
+                niveau="L3",
+                groupe="G1",
+                email="existing.student@esi-sba.dz",
+            )
+        )
+        await session.commit()
+
+    csv_content = (
+        "matricule,nom,prenom,filiere,niveau,groupe,email\n"
+        "ST001,Doe,John,INFO,L3,G1,john.doe@esi-sba.dz\n"
+        "ST002,Doe,Jane,INFO,L3,G1,jane.doe@esi-sba.dz\n"
+    )
+
+    response = await client.post(
+        "/api/v1/import/students",
+        files={"file": ("students.csv", csv_content, "text/csv")},
+        headers=bearer_headers(admin_user),
+    )
+
+    assert response.status_code == 409
+    data = response.json()
+    assert data["imported"] == 0
+    assert data["errors"] >= 1
+    assert any(
+        error["field"] == "matricule"
+        and error["line"] == 1
+        and "Étudiant déjà importé" in error["reason"]
+        for error in data["error_report"]
+    )
+
+    async with TestSessionLocal() as session:
+        result = await session.execute(
+            select(AcademicStudent).where(AcademicStudent.matricule == "ST002")
+        )
+        assert result.scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio
