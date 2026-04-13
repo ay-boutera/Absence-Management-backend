@@ -146,7 +146,10 @@ async def import_planning_csv(
     filtered_lines: list[str] = []
     for line in content.splitlines():
         stripped = line.strip()
-        if stripped.startswith("#") or stripped == "":
+        # A line is completely empty if it's just commas/semicolons (Excel sometimes outputs empty cells as separators)
+        truly_empty = not stripped.replace(",", "").replace(";", "").replace('"', "").strip()
+        
+        if stripped.startswith("#") or truly_empty:
             continue
         filtered_lines.append(line)
 
