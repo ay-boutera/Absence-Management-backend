@@ -6,3 +6,78 @@ class UserRole(str, PyEnum):
     ADMIN = "admin"
     TEACHER = "teacher"
     STUDENT = "student"
+
+
+class SessionType(str, PyEnum):
+    COURS = "cours"
+    TD = "TD"
+    TP = "TP"
+    EXAMEN = "examen"
+
+
+class ImportType(str, PyEnum):
+    STUDENTS = "students"
+    PLANNING = "planning"
+    TEACHERS = "teachers"
+
+
+class ImportExportAction(str, PyEnum):
+    IMPORT = "import"
+    EXPORT = "export"
+
+
+class ImportExportFileType(str, PyEnum):
+    CSV = "csv"
+    PDF = "pdf"
+    EXCEL = "excel"
+
+
+class ImportExportDataType(str, PyEnum):
+    STUDENTS = "students"
+    ATTENDANCE = "attendance"
+    SCHEDULE = "schedule"
+    JUSTIFICATIONS = "justifications"
+
+
+class AcademicYear(str, PyEnum):
+    CP_1 = "1CP"
+    CP_2 = "2CP"
+    CS_1 = "1CS"
+    CS_2 = "2CS"
+    CS_3 = "3CS"
+
+
+class SectionEnum(str, PyEnum):
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+    E = "E"
+    F = "F"
+    G = "G"
+    H = "H"
+    I = "I"
+    J = "J"
+    K = "K"
+    L = "L"
+    M = "M"
+    N = "N"
+    O = "O"
+    P = "P"
+    Q = "Q"
+    R = "R"
+    S = "S"
+    T = "T"
+    U = "U"
+    V = "V"
+    W = "W"
+    X = "X"
+    Y = "Y"
+    Z = "Z"
+
+
+class SpecialityEnum(str, PyEnum):
+    ISI = "ISI"
+    SIW = "SIW"
+    IASD = "IASD"
+    CYS = "CyS"

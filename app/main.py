@@ -25,7 +25,15 @@ from starlette.middleware.sessions import SessionMiddleware  # ← NEW
 from app.middlewares.security import security_headers
 from app.config import settings
 from app.db import engine
-from app.routers import auth, import_export, planning, teachers, users
+from app.routers import (
+    account_admins,
+    account_students,
+    account_teachers,
+    auth,
+    exports,
+    imports,
+    planning,
+)
 from app.services.email_service import log_smtp_health_check
 
 
@@ -94,9 +102,11 @@ app.middleware("http")(security_headers)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/api/v1")
-app.include_router(users.router, prefix="/api/v1")
-app.include_router(import_export.router, prefix="/api/v1")
-app.include_router(teachers.router, prefix="/api/v1")
+app.include_router(account_students.router, prefix="/api/v1")
+app.include_router(account_teachers.router, prefix="/api/v1")
+app.include_router(account_admins.router, prefix="/api/v1")
+app.include_router(imports.router, prefix="/api/v1")
+app.include_router(exports.router, prefix="/api/v1")
 app.include_router(planning.router, prefix="/api/v1")
 
 

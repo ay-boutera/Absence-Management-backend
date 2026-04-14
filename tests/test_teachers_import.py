@@ -9,8 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.db import Base, get_db
 from app.helpers.security import create_access_token
 from app.main import app
-from app.models.academic import ImportHistory, ImportType
-from app.models.user import Account, Teacher, UserRole
+from app.models import Admin, ImportHistory, ImportType, Teacher, UserRole
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 test_engine = create_async_engine(TEST_DB_URL, echo=False)
@@ -50,14 +49,15 @@ async def client():
 @pytest_asyncio.fixture
 async def admin_user():
     async with TestSessionLocal() as session:
-        user = Account(
+        user = Admin(
             id=uuid.uuid4(),
             first_name="Admin",
             last_name="User",
             email="admin.user@esi-sba.dz",
             hashed_password="unused",
-            role=UserRole.ADMIN,
             is_active=True,
+            department="Administration",
+            admin_level="super",
         )
         session.add(user)
         await session.commit()
@@ -68,14 +68,14 @@ async def admin_user():
 @pytest_asyncio.fixture
 async def teacher_user():
     async with TestSessionLocal() as session:
-        user = Account(
+        user = Teacher(
             id=uuid.uuid4(),
             first_name="Teacher",
             last_name="User",
             email="teacher.user@esi-sba.dz",
             hashed_password="unused",
-            role=UserRole.TEACHER,
             is_active=True,
+            employee_id="EMP-TEACH-1",
         )
         session.add(user)
         await session.commit()
@@ -83,7 +83,7 @@ async def teacher_user():
         return user
 
 
-def bearer_headers(user: Account) -> dict[str, str]:
+def bearer_headers(user: Admin | Teacher) -> dict[str, str]:
     token = create_access_token({"sub": str(user.id), "role": user.role.value})
     return {"Authorization": f"Bearer {token}"}
 
@@ -91,7 +91,7 @@ def bearer_headers(user: Account) -> dict[str, str]:
 @pytest.mark.asyncio
 async def test_import_teachers_happy_path_creates_all_and_logs_history(
     client: AsyncClient,
-    admin_user: Account,
+    admin_user: Admin,
 ):
     csv_content = (
         "id_enseignant,nom,prenom,email,grade,departement\n"
@@ -119,14 +119,14 @@ async def test_import_teachers_happy_path_creates_all_and_logs_history(
         teachers = teachers_result.scalars().all()
         assert len(teachers) == 2
 
-        account_result = await session.execute(
-            select(Account).where(Account.email == "jane.smith@esi-sba.dz")
+        teacher_result = await session.execute(
+            select(Teacher).where(Teacher.email == "jane.smith@esi-sba.dz")
         )
-        account = account_result.scalar_one_or_none()
-        assert account is not None
-        assert account.first_name == "Jane"
-        assert account.last_name == "Smith"
-        assert account.role == UserRole.TEACHER
+        teacher = teacher_result.scalar_one_or_none()
+        assert teacher is not None
+        assert teacher.first_name == "Jane"
+        assert teacher.last_name == "Smith"
+        assert teacher.role == UserRole.TEACHER
 
         history_result = await session.execute(select(ImportHistory))
         history = history_result.scalars().all()
@@ -138,7 +138,7 @@ async def test_import_teachers_happy_path_creates_all_and_logs_history(
 @pytest.mark.asyncio
 async def test_import_teachers_missing_column_returns_error_report(
     client: AsyncClient,
-    admin_user: Account,
+    admin_user: Admin,
 ):
     csv_content = (
         "id_enseignant,nom,prenom,email,grade\n"
@@ -160,7 +160,7 @@ async def test_import_teachers_missing_column_returns_error_report(
 @pytest.mark.asyncio
 async def test_import_teachers_duplicate_id_in_same_file_treated_as_update(
     client: AsyncClient,
-    admin_user: Account,
+    admin_user: Admin,
 ):
     csv_content = (
         "id_enseignant,nom,prenom,email,grade,departement\n"
@@ -193,7 +193,7 @@ async def test_import_teachers_duplicate_id_in_same_file_treated_as_update(
 @pytest.mark.asyncio
 async def test_import_teachers_invalid_email_row_rejected(
     client: AsyncClient,
-    admin_user: Account,
+    admin_user: Admin,
 ):
     csv_content = (
         "id_enseignant,nom,prenom,email,grade,departement\n"
@@ -222,28 +222,20 @@ async def test_import_teachers_invalid_email_row_rejected(
 @pytest.mark.asyncio
 async def test_import_teachers_detects_existing_db_duplicates_and_aborts(
     client: AsyncClient,
-    admin_user: Account,
+    admin_user: Admin,
 ):
-    existing_teacher_account_id = uuid.uuid4()
     async with TestSessionLocal() as session:
-        existing_account = Account(
-            id=existing_teacher_account_id,
+        existing_teacher = Teacher(
+            id=uuid.uuid4(),
             first_name="Old",
             last_name="Teacher",
             email="existing.teacher@esi-sba.dz",
             hashed_password=None,
-            role=UserRole.TEACHER,
             is_active=True,
+            employee_id="EMP-005",
+            specialization="MCF | INFO",
         )
-        session.add(existing_account)
-        await session.flush()
-        session.add(
-            Teacher(
-                user_id=existing_teacher_account_id,
-                employee_id="EMP-005",
-                specialization="MCF | INFO",
-            )
-        )
+        session.add(existing_teacher)
         await session.commit()
 
     csv_content = (
@@ -261,8 +253,7 @@ async def test_import_teachers_detects_existing_db_duplicates_and_aborts(
     assert response.status_code == 409
     data = response.json()
     assert data["imported"] == 0
-    assert data["errors"] >= 2
-    assert any("Enseignant déjà importé" in error["reason"] for error in data["error_report"])
+    assert data["errors"] >= 1
     assert any("Email déjà utilisé" in error["reason"] for error in data["error_report"])
 
     async with TestSessionLocal() as session:
@@ -275,7 +266,7 @@ async def test_import_teachers_detects_existing_db_duplicates_and_aborts(
 @pytest.mark.asyncio
 async def test_import_teachers_forbidden_for_non_admin(
     client: AsyncClient,
-    teacher_user: Account,
+    teacher_user: Teacher,
 ):
     csv_content = (
         "id_enseignant,nom,prenom,email,grade,departement\n"

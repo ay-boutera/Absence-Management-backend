@@ -1,6 +1,5 @@
 import uuid
 from datetime import date, time
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,15 +11,17 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.db import Base, get_db
 from app.helpers.security import create_access_token
 from app.main import app
-from app.models.academic import (
+from app.models import (
     Absence,
+    AcademicYear,
+    AcademicStudent,
     Module,
     PlanningSession,
     Salle,
-    SessionType,
-    Student as AcademicStudent,
+    SectionEnum,
+    SpecialityEnum,
 )
-from app.models.user import Account, Admin, PasswordResetToken, Student, Teacher, UserRole
+from app.models import Admin, PasswordResetToken, Student, Teacher, UserRole
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 test_engine = create_async_engine(TEST_DB_URL, echo=False)
@@ -60,66 +61,46 @@ async def setup_db():
 async def client():
     async with AsyncClient(
         transport=ASGITransport(app=app),
-        base_url="http://test",
+        base_url="https://test",
     ) as c:
         yield c
 
 
 async def seed_reference_data() -> dict[str, uuid.UUID]:
     async with TestSessionLocal() as session:
-        admin_user = Account(
+        admin_user = Admin(
             id=uuid.uuid4(),
             first_name="Admin",
             last_name="User",
             email="a.admin@esi-sba.dz",
             hashed_password=fake_hash_password("Admin@1234"),
-            role=UserRole.ADMIN,
             is_active=True,
+            department="Administration",
+            admin_level="super",
         )
-        teacher_user = Account(
+        teacher_user = Teacher(
             id=uuid.uuid4(),
             first_name="Teacher",
             last_name="User",
             email="t.teacher@esi-sba.dz",
             hashed_password=fake_hash_password("Teacher@1234"),
-            role=UserRole.TEACHER,
             is_active=True,
+            employee_id="EMP-001",
+            specialization="Computer Science",
         )
-        student_user = Account(
+        student_user = Student(
             id=uuid.uuid4(),
             first_name="Student",
             last_name="User",
             email="s.student@esi-sba.dz",
             hashed_password=fake_hash_password("Student@1234"),
-            role=UserRole.STUDENT,
             is_active=True,
+            student_id="ST-001",
+            program="INFO",
+            level="L3",
+            group="G1",
         )
         session.add_all([admin_user, teacher_user, student_user])
-        await session.flush()
-
-        session.add(
-            Admin(
-                user_id=admin_user.id,
-                department="Administration",
-                admin_level="super",
-            )
-        )
-        session.add(
-            Teacher(
-                user_id=teacher_user.id,
-                employee_id="EMP-001",
-                specialization="Computer Science",
-            )
-        )
-        session.add(
-            Student(
-                user_id=student_user.id,
-                student_id="ST-001",
-                program="INFO",
-                level="L3",
-                group="G1",
-            )
-        )
 
         session.add(Module(code="ALG101", nom="Algebra"))
         session.add(Salle(code="A101"))
@@ -137,14 +118,18 @@ async def seed_reference_data() -> dict[str, uuid.UUID]:
         await session.flush()
 
         planning = PlanningSession(
-            id_seance="SES-001",
-            code_module="ALG101",
-            type_seance=SessionType.COURS,
-            date=date(2026, 4, 1),
-            heure_debut=time(8, 0),
-            heure_fin=time(10, 0),
-            salle="A101",
-            id_enseignant=teacher_user.id,
+            year=AcademicYear.CS_2,
+            section=SectionEnum.A,
+            speciality=SpecialityEnum.ISI,
+            semester="S1",
+            day="Dimanche",
+            time_start=time(8, 0),
+            time_end=time(10, 0),
+            type="Cours",
+            subject="Algebra",
+            room="A101",
+            group="G1",
+            teacher_id=teacher_user.id,
         )
         session.add(planning)
         await session.flush()
@@ -168,18 +153,20 @@ async def seed_reference_data() -> dict[str, uuid.UUID]:
 @pytest.mark.asyncio
 async def test_swagger_documented_endpoints_smoke(client: AsyncClient):
     seeded = await seed_reference_data()
+    oauth_mock_user = Student(
+        id=seeded["student_id"],
+        first_name="Student",
+        last_name="User",
+        email="s.student@esi-sba.dz",
+        hashed_password=None,
+        is_active=True,
+        student_id="ST-OAUTH",
+        program="INFO",
+        level="L1",
+        group="G1",
+    )
 
     with (
-        patch(
-            "app.services.redis_service.RedisService.is_token_blacklisted",
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
-        patch(
-            "app.services.redis_service.RedisService.blacklist_token",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
         patch(
             "app.services.auth_service.send_password_reset_email",
             new_callable=AsyncMock,
@@ -199,7 +186,7 @@ async def test_swagger_documented_endpoints_smoke(client: AsyncClient):
             "app.services.oauth_service.OAuthService.handle_callback",
             new_callable=AsyncMock,
             return_value=(
-                SimpleNamespace(role=UserRole.STUDENT),
+                oauth_mock_user,
                 "oauth_access_token",
                 "oauth_refresh_token",
                 True,
@@ -288,7 +275,7 @@ async def test_swagger_documented_endpoints_smoke(client: AsyncClient):
         )
         assert reset_confirm.status_code == 200
 
-        with patch("app.routers.auth.secrets.token_urlsafe", return_value="fake-state"):
+        with patch("app.routers.auth._build_signed_oauth_state", return_value="fake-state"):
             oauth_url = await client.get("/api/v1/auth/google")
         assert oauth_url.status_code == 200
 
@@ -413,8 +400,8 @@ async def test_swagger_documented_endpoints_smoke(client: AsyncClient):
                 "file": (
                     "planning.csv",
                     (
-                        "id_seance,code_module,type_seance,date,heure_debut,heure_fin,salle,id_enseignant\n"
-                        f"SES-002,ALG101,cours,2026-04-02,08:00,10:00,A101,{seeded['teacher_id']}\n"
+                        "year,section,speciality,semester,day,time_start,time_end,type,subject,teacher,room,group\n"
+                        "2CS,A,ISI,S1,Dimanche,08:00,10:00,Cours,Algebra,EMP-001,A101,G1\n"
                     ),
                     "text/csv",
                 )

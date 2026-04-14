@@ -10,6 +10,7 @@ Fixes applied:
 """
 
 import uuid
+from contextlib import nullcontext
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
@@ -19,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.main import app
 from app.db import Base, get_db
-from app.models.user import Account, UserRole, PasswordResetToken
+from app.models import Admin, Student, Teacher, UserRole, PasswordResetToken
 from app.core.security import hash_password
 from fastapi import HTTPException as FastAPIHTTPException
 
@@ -57,7 +58,7 @@ async def setup_db():
 @pytest_asyncio.fixture
 async def client():
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="https://test"
     ) as c:
         yield c
 
@@ -69,14 +70,15 @@ async def admin_user():
     on a string.
     """
     async with TestSessionLocal() as session:
-        user = Account(
+        user = Admin(
             id=uuid.uuid4(),
             first_name="Admin",
             last_name="User",
             email="a.user@esi-sba.dz",
             hashed_password=hash_password("Admin@1234"),
-            role=UserRole.ADMIN,
             is_active=True,
+            department="Administration",
+            admin_level="super",
         )
         session.add(user)
         await session.commit()
@@ -87,14 +89,14 @@ async def admin_user():
 @pytest_asyncio.fixture
 async def teacher_user():
     async with TestSessionLocal() as session:
-        user = Account(
+        user = Teacher(
             id=uuid.uuid4(),
             first_name="Teacher",
             last_name="User",
             email="t.user@esi-sba.dz",
             hashed_password=hash_password("Teacher@1234"),
-            role=UserRole.TEACHER,
             is_active=True,
+            employee_id="EMP-AUTH-1",
         )
         session.add(user)
         await session.commit()
@@ -105,14 +107,17 @@ async def teacher_user():
 @pytest_asyncio.fixture
 async def inactive_user():
     async with TestSessionLocal() as session:
-        user = Account(
+        user = Student(
             id=uuid.uuid4(),
             first_name="Inactive",
             last_name="User",
             email="i.user@esi-sba.dz",
             hashed_password=hash_password("Inactive@1234"),
-            role=UserRole.STUDENT,
             is_active=False,
+            student_id="ST-INACTIVE",
+            program="INFO",
+            level="L1",
+            group="G1",
         )
         session.add(user)
         await session.commit()
@@ -123,11 +128,7 @@ async def inactive_user():
 # Returns a context manager that patches Redis for the ENTIRE test,
 # including both the login request AND any subsequent authenticated request.
 def mock_redis():
-    return patch(
-        "app.services.redis_service.RedisService.is_token_blacklisted",
-        new_callable=AsyncMock,
-        return_value=False,
-    )
+    return nullcontext()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -390,15 +391,18 @@ class TestPasswordReset:
         """
         user_id = uuid.uuid4()
         async with TestSessionLocal() as session:
-            oauth_user = Account(
+            oauth_user = Student(
                 id=user_id,  # ← explicit UUID object
                 first_name="OAuth",
                 last_name="User",
                 email="o.user@esi-sba.dz",
                 hashed_password=None,  # no password — OAuth only
                 google_id="google_test_123",
-                role=UserRole.STUDENT,
                 is_active=True,
+                student_id="ST-OAUTH",
+                program="INFO",
+                level="L2",
+                group="G2",
             )
             session.add(oauth_user)
             await session.commit()
@@ -463,15 +467,15 @@ class TestGoogleOAuth:
         """Callback accepts a valid signed state even when session cookie is missing."""
         user_id = uuid.uuid4()
         async with TestSessionLocal() as session:
-            existing = Account(
+            existing = Teacher(
                 id=user_id,
                 first_name="Nour",
                 last_name="Trari",
                 email="n.trari@esi-sba.dz",
                 hashed_password=hash_password("Pass@1234"),
-                role=UserRole.TEACHER,
                 is_active=True,
                 google_id="google_uid_existing",
+                employee_id="EMP-NOUR",
             )
             session.add(existing)
             await session.commit()
@@ -524,19 +528,22 @@ class TestGoogleOAuth:
     @pytest.mark.asyncio
     async def test_callback_new_user_created(self, client):
         """
-        handle_callback returns a new user → router sets cookies + redirects
-        with ?new=true.
+        handle_callback returns a user → router sets cookies + redirects
+        with role information in query string.
         """
         user_id = uuid.uuid4()
         async with TestSessionLocal() as session:
-            new_user = Account(
+            new_user = Student(
                 id=user_id,
                 first_name="Ilyes",
                 last_name="Brahmi",
                 email="i.brahmi@esi-sba.dz",
                 google_id="google_uid_new",
-                role=UserRole.STUDENT,
                 is_active=True,
+                student_id="ST-NEW-OAUTH",
+                program="INFO",
+                level="L3",
+                group="G1",
             )
             session.add(new_user)
             await session.commit()
@@ -563,8 +570,8 @@ class TestGoogleOAuth:
             )
 
         assert response.status_code == 302
-        assert "/student" in response.headers["location"]
-        assert "new=true" in response.headers["location"]
+        assert "/auth/callback" in response.headers["location"]
+        assert "role=student" in response.headers["location"]
         assert "access_token" in response.cookies
         assert "refresh_token" in response.cookies
 
@@ -572,19 +579,19 @@ class TestGoogleOAuth:
     async def test_callback_existing_user_linked(self, client):
         """
         Admin pre-created a teacher account. First OAuth login links google_id.
-        Redirect has ?new=false (not a new user).
+        Redirect includes role query parameter.
         """
         user_id = uuid.uuid4()
         async with TestSessionLocal() as session:
-            existing = Account(
+            existing = Teacher(
                 id=user_id,
                 first_name="Nour",
                 last_name="Trari",
                 email="n.trari@esi-sba.dz",
                 hashed_password=hash_password("Pass@1234"),
-                role=UserRole.TEACHER,
                 is_active=True,
                 google_id=None,
+                employee_id="EMP-NOUR-2",
             )
             session.add(existing)
             await session.commit()
@@ -611,7 +618,7 @@ class TestGoogleOAuth:
             )
 
         assert response.status_code == 302
-        assert "new=false" in response.headers["location"]
+        assert "role=teacher" in response.headers["location"]
         assert "access_token" in response.cookies
 
 

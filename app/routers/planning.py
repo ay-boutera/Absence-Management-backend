@@ -28,8 +28,9 @@ from app.helpers.permissions import (
     get_current_user_bearer,
     require_can_import_data_bearer,
 )
-from app.models.academic import ImportHistory, ImportType, PlanningSession
-from app.models.user import Account, Teacher, UserRole
+from app.models import ImportHistory, ImportType, PlanningSession
+from app.models import Teacher, UserRole
+from app.models.student import Student as StudentUser
 from app.schemas.planning import (
     PlanningImportResponse,
     PlanningSessionOut,
@@ -135,7 +136,7 @@ Import a weekly timetable from a UTF-8, comma-delimited CSV file.
 )
 async def import_planning_csv(
     file: UploadFile = File(..., description="UTF-8 comma-delimited CSV file"),
-    current_user: Account = Depends(require_can_import_data_bearer),
+    current_user=Depends(require_can_import_data_bearer),
     db: AsyncSession = Depends(get_db),
 ):
     # ── Level 1: file decoding ────────────────────────────────────────────────
@@ -187,9 +188,7 @@ async def import_planning_csv(
     parsed_rows: list[dict] = []   # cleaned, validated rows
 
     # Pre-fetch all teacher employee_ids for O(1) lookup
-    teachers_result = await db.execute(
-        select(Teacher).options(selectinload(Teacher.user))
-    )
+    teachers_result = await db.execute(select(Teacher))
     all_teachers: list[Teacher] = list(teachers_result.scalars().all())
     teacher_by_employee_id: dict[str, Teacher] = {
         t.employee_id: t for t in all_teachers if t.employee_id
@@ -285,7 +284,7 @@ async def import_planning_csv(
             row_errors += 1
         elif year in YEARS_WITHOUT_SPECIALITY and speciality:
             add_error(n, "speciality",
-                      f"ne doit pas être renseigné pour {year}")
+                    f"ne doit pas être renseigné pour {year}")
             row_errors += 1
         elif speciality and speciality not in VALID_SPECIALITIES:
             add_error(n, "speciality", f"valeur '{speciality}' invalide")
@@ -294,7 +293,7 @@ async def import_planning_csv(
         # --- 3CS / S2 (stage) ---
         if year == "3CS" and semester == "S2":
             add_error(n, "semester",
-                      "3CS n'a pas de semestre S2 (stage en entreprise — S1 uniquement)")
+                    "3CS n'a pas de semestre S2 (stage en entreprise — S1 uniquement)")
             row_errors += 1
 
         # --- teacher lookup ---
@@ -303,7 +302,7 @@ async def import_planning_csv(
             teacher_obj = teacher_by_employee_id.get(teacher_raw)
             if teacher_obj is None:
                 add_error(n, "teacher",
-                          f"id_enseignant '{teacher_raw}' introuvable dans la base")
+                        f"id_enseignant '{teacher_raw}' introuvable dans la base")
                 row_errors += 1
 
         parsed_rows.append({
@@ -335,7 +334,7 @@ async def import_planning_csv(
         n = pr["line"]
         if key in seen_keys:
             add_error(n, "session",
-                      f"doublon détecté dans le fichier (même session en ligne {seen_keys[key]})")
+                    f"doublon détecté dans le fichier (même session en ligne {seen_keys[key]})")
             pr["has_error"] = True
         else:
             seen_keys[key] = n
@@ -459,7 +458,7 @@ Returns the planning sessions for the authenticated user.
 
 - **Teacher**: all sessions where `teacher_id` matches the logged-in teacher.
 - **Student**: sessions matching the student's `year`, `section`, `speciality`,
-  and either `group` matches or `group IS NULL` (whole-promo Cours).
+    and either `group` matches or `group IS NULL` (whole-promo Cours).
 - **Admin**: returns all sessions (unfiltered by person).
 
 **Optional query params:** `semester` (S1|S2), `day` (Dimanche|…|Jeudi)
@@ -475,20 +474,20 @@ async def my_schedule(
         default=None,
         description="Filter by day of week",
     ),
-    current_user: Account = Depends(get_current_user_bearer),
+    current_user=Depends(get_current_user_bearer),
     db: AsyncSession = Depends(get_db),
 ):
     role = current_user.role
 
     # Base query with teacher eagerly loaded
     base_q = select(PlanningSession).options(
-        selectinload(PlanningSession.teacher).selectinload(Teacher.user)
+        selectinload(PlanningSession.teacher)
     )
 
     if role == UserRole.TEACHER:
         # Find the teacher profile
         teacher_result = await db.execute(
-            select(Teacher).where(Teacher.user_id == current_user.id)
+            select(Teacher).where(Teacher.id == current_user.id)
         )
         teacher = teacher_result.scalar_one_or_none()
         if teacher is None:
@@ -499,11 +498,8 @@ async def my_schedule(
         base_q = base_q.where(PlanningSession.teacher_id == teacher.id)
 
     elif role == UserRole.STUDENT:
-        # Resolve student profile (StudentUser)
-        from app.models.user import StudentUser  # avoid circular import
-
         student_result = await db.execute(
-            select(StudentUser).where(StudentUser.user_id == current_user.id)
+            select(StudentUser).where(StudentUser.id == current_user.id)
         )
         student = student_result.scalar_one_or_none()
         if student is None:
@@ -582,12 +578,12 @@ async def my_schedule(
 
     def _serialize(s: PlanningSession) -> PlanningSessionOut:
         teacher_info: Optional[TeacherInfo] = None
-        if s.teacher is not None and s.teacher.user is not None:
+        if s.teacher is not None:
             teacher_info = TeacherInfo(
                 id=s.teacher.id,
                 employee_id=s.teacher.employee_id,
-                first_name=s.teacher.user.first_name,
-                last_name=s.teacher.user.last_name,
+                first_name=s.teacher.first_name,
+                last_name=s.teacher.last_name,
             )
         return PlanningSessionOut(
             id=s.id,
