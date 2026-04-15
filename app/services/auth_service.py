@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import and_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -60,17 +61,25 @@ class AuthService:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
     ) -> None:
-        log = AuditLog(
-            user_id=user_id,
-            action=action,
-            resource_type=resource_type,
-            resource_id=str(resource_id) if resource_id else None,
-            details=details,
-            ip_address=ip_address,
-            user_agent=user_agent,
-        )
-        self.db.add(log)
-        await self.db.flush()
+        try:
+            async with self.db.begin_nested():
+                log = AuditLog(
+                    user_id=user_id,
+                    action=action,
+                    resource_type=resource_type,
+                    resource_id=str(resource_id) if resource_id else None,
+                    details=details,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+                self.db.add(log)
+                await self.db.flush()
+        except SQLAlchemyError:
+            logger.exception(
+                "Audit logging failed for action=%s user_id=%s; continuing without blocking request.",
+                action,
+                user_id,
+            )
 
     async def login(
         self,

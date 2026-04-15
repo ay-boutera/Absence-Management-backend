@@ -46,6 +46,16 @@ from app.services.email_service import log_smtp_health_check
 
 logger = logging.getLogger(__name__)
 
+CRITICAL_TABLES = (
+    "admins",
+    "teachers",
+    "student_users",
+    "audit_logs",
+    "password_reset_tokens",
+    "import_history",
+    "import_export_logs",
+)
+
 
 def _get_alembic_head_revision() -> str:
     project_root = Path(__file__).resolve().parents[1]
@@ -67,6 +77,26 @@ async def _get_database_revision() -> str | None:
             "Run `alembic upgrade head` before starting the API."
         )
         raise RuntimeError("Database revision check failed") from exc
+
+
+async def _get_critical_tables_status() -> dict[str, bool]:
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = current_schema()
+                    """
+                )
+            )
+            existing_tables = {row[0] for row in result.fetchall()}
+    except SQLAlchemyError as exc:
+        logger.exception("Failed to inspect database tables for health check.")
+        raise RuntimeError("Database table inspection failed") from exc
+
+    return {table_name: table_name in existing_tables for table_name in CRITICAL_TABLES}
 
 
 async def _assert_database_revision_is_current() -> None:
@@ -200,6 +230,41 @@ async def database_health_check():
         "service": settings.APP_NAME,
         "expected_revision": expected_revision,
         "current_revision": current_revision,
+    }
+
+
+@app.get("/health/db/tables", tags=["System"])
+async def database_tables_health_check():
+    try:
+        table_status = await _get_critical_tables_status()
+    except RuntimeError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "service": settings.APP_NAME,
+                "error": str(exc),
+                "tables": None,
+            },
+        )
+
+    missing_tables = [name for name, exists in table_status.items() if not exists]
+    if missing_tables:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "missing_tables",
+                "service": settings.APP_NAME,
+                "tables": table_status,
+                "missing": missing_tables,
+                "hint": "Run `alembic upgrade head`.",
+            },
+        )
+
+    return {
+        "status": "ok",
+        "service": settings.APP_NAME,
+        "tables": table_status,
     }
 
 

@@ -199,6 +199,12 @@ async def test_swagger_documented_endpoints_smoke(client: AsyncClient):
         health_response = await client.get("/health")
         assert health_response.status_code == 200
 
+        db_health_response = await client.get("/health/db")
+        assert db_health_response.status_code == 200
+
+        db_tables_health_response = await client.get("/health/db/tables")
+        assert db_tables_health_response.status_code == 200
+
         docs_response = await client.get("/api/v1/docs")
         assert docs_response.status_code == 200
 
