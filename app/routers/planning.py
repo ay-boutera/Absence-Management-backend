@@ -178,8 +178,8 @@ async def import_planning_csv(
             detail={
                 "error": "Format CSV invalide",
                 "detail": f"Colonnes manquantes: {missing_cols}. "
-                          f"Délimiteur détecté: '{delimiter}'. "
-                          f"En-tête reçu: {raw_fieldnames}",
+                        f"Délimiteur détecté: '{delimiter}'. "
+                        f"En-tête reçu: {raw_fieldnames}",
             },
         )
 
@@ -228,7 +228,7 @@ async def import_planning_csv(
         # --- year ---
         if year not in VALID_YEARS:
             add_error(n, "year",
-                      f"valeur '{year}' invalide. Valeurs acceptées: 1CP,2CP,1CS,2CS,3CS")
+                    f"valeur '{year}' invalide. Valeurs acceptées: 1CP,2CP,1CS,2CS,3CS")
             row_errors += 1
 
         # --- section ---
