@@ -9,10 +9,17 @@ class UserRole(str, PyEnum):
 
 
 class SessionType(str, PyEnum):
-    COURS = "cours"
+    COURS = "Cours"
     TD = "TD"
     TP = "TP"
-    EXAMEN = "examen"
+    EXAMEN = "Examen"
+    TD_TP = "TD/TP"
+    COURS_TP = "Cours/TP"
+    COURS_TD_TP = "Cours/TD/TP"
+    ENCADREMENTS = "Encadrements"
+    ENCADREMENTS_PP = "Encadrements projets pluridisciplinaires"
+    COURS_TD_COLLECTIF = "Cours/TD Collectif"
+    
 
 
 class ImportType(str, PyEnum):

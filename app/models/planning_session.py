@@ -1,11 +1,18 @@
 import uuid
 
-from sqlalchemy import Column, Enum as SQLAlchemyEnum, ForeignKey, String, Time, UniqueConstraint
+from sqlalchemy import Column, Enum as SQLAlchemyEnum, ForeignKey, String, Time, UniqueConstraint, Table
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db import Base
 from app.config.enums import AcademicYear, SectionEnum, SpecialityEnum
+
+planning_session_teachers = Table(
+    "planning_session_teachers",
+    Base.metadata,
+    Column("planning_session_id", UUID(as_uuid=True), ForeignKey("planning_sessions.id", ondelete="CASCADE"), primary_key=True),
+    Column("teacher_id", UUID(as_uuid=True), ForeignKey("teachers.id", ondelete="CASCADE"), primary_key=True),
+)
 
 
 class PlanningSession(Base):
@@ -36,14 +43,7 @@ class PlanningSession(Base):
     room = Column(String(100), nullable=True)
     group = Column(String(20), nullable=True)
 
-    teacher_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("teachers.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
-    teacher = relationship("Teacher", foreign_keys=[teacher_id])
+    teachers = relationship("Teacher", secondary=planning_session_teachers)
 
     __table_args__ = (
         UniqueConstraint(
@@ -56,7 +56,6 @@ class PlanningSession(Base):
             "type",
             "subject",
             "group",
-            "teacher_id",
             name="uq_planning_session",
         ),
     )
