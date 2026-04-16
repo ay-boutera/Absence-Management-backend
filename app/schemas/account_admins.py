@@ -22,7 +22,6 @@ class AdminAccountCreate(BaseModel):
     last_name: str
     phone: Optional[str] = None
     department: Optional[str] = None
-    admin_level: Optional[str] = None
     can_import_data: bool = True
     can_export_data: bool = True
     can_manage_users: bool = True
@@ -43,7 +42,6 @@ class AdminAccountCreate(BaseModel):
                 "last_name": "Admin",
                 "phone": "+213550000003",
                 "department": "Pedagogy",
-                "admin_level": "regular",
                 "can_import_data": True,
                 "can_export_data": True,
                 "can_manage_users": True,

@@ -39,7 +39,9 @@ async def create_super_admin_account(
     if existing_super_admin.scalar_one_or_none() is not None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Super admin already exists.",
+            detail={
+                "error": "Super admin already exists.",
+            },
         )
 
     service = AuthService(db)

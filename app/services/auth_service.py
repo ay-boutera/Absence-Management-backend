@@ -309,9 +309,8 @@ class AuthService:
         )
         admin_level = forced_admin_level
         if admin_level is None:
-            admin_level = (
-                None if data.admin_level is None else str(data.admin_level).strip() or None
-            )
+            raw_val = getattr(data, "admin_level", None)
+            admin_level = None if raw_val is None else str(raw_val).strip() or None
         admin_level = admin_level or "regular"
 
         user = Admin(
