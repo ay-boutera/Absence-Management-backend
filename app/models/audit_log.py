@@ -1,9 +1,8 @@
 from enum import Enum
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, String, Text, DateTime
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
 from sqlalchemy import Enum as SQLAlchemyEnum
 
 from app.db.database import Base
@@ -24,9 +23,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    user_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     action = Column(SQLAlchemyEnum(ActionType), nullable=False)
 
     resource_type = Column(String(50), nullable=True)
@@ -41,8 +38,6 @@ class AuditLog(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
-
-    user = relationship("Account", back_populates="audit_logs")
 
     def __repr__(self):
         return f"<AuditLog {self.action} user_id={self.user_id}>"

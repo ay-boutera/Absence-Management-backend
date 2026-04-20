@@ -13,10 +13,17 @@ Run with:
     http://localhost:8000/api/v1/docs
 """
 
+import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -25,8 +32,87 @@ from starlette.middleware.sessions import SessionMiddleware  # ← NEW
 from app.middlewares.security import security_headers
 from app.config import settings
 from app.db import engine
-from app.routers import auth, import_export, teachers, users
+from app.routers import (
+    account_admins,
+    account_students,
+    account_teachers,
+    auth,
+    exports,
+    imports,
+    planning,
+)
 from app.services.email_service import log_smtp_health_check
+
+
+logger = logging.getLogger(__name__)
+
+CRITICAL_TABLES = (
+    "admins",
+    "teachers",
+    "student_users",
+    "audit_logs",
+    "password_reset_tokens",
+    "import_history",
+    "import_export_logs",
+)
+
+
+def _get_alembic_head_revision() -> str:
+    project_root = Path(__file__).resolve().parents[1]
+    alembic_ini_path = project_root / "alembic.ini"
+    alembic_config = Config(str(alembic_ini_path))
+    alembic_config.set_main_option("script_location", str(project_root / "alembic"))
+    script_directory = ScriptDirectory.from_config(alembic_config)
+    return script_directory.get_current_head()
+
+
+async def _get_database_revision() -> str | None:
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(text("SELECT version_num FROM alembic_version"))
+            return result.scalar_one_or_none()
+    except SQLAlchemyError as exc:
+        logger.exception(
+            "Database revision check failed while reading alembic_version table. "
+            "Run `alembic upgrade head` before starting the API."
+        )
+        raise RuntimeError("Database revision check failed") from exc
+
+
+async def _get_critical_tables_status() -> dict[str, bool]:
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = current_schema()
+                    """
+                )
+            )
+            existing_tables = {row[0] for row in result.fetchall()}
+    except SQLAlchemyError as exc:
+        logger.exception("Failed to inspect database tables for health check.")
+        raise RuntimeError("Database table inspection failed") from exc
+
+    return {table_name: table_name in existing_tables for table_name in CRITICAL_TABLES}
+
+
+async def _assert_database_revision_is_current() -> None:
+    expected_revision = _get_alembic_head_revision()
+    current_revision = await _get_database_revision()
+
+    if current_revision != expected_revision:
+        logger.error(
+            "Database revision mismatch detected: database=%s expected=%s. "
+            "Run `alembic upgrade head` before starting the API.",
+            current_revision,
+            expected_revision,
+        )
+        raise RuntimeError(
+            "Database revision mismatch. Run `alembic upgrade head` before starting the API."
+        )
 
 
 # ── Rate Limiter ──────────────────────────────────────────────────────────────
@@ -36,6 +122,7 @@ limiter = Limiter(key_func=get_remote_address)
 # ── Startup / Shutdown ────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await _assert_database_revision_is_current()
     await log_smtp_health_check()
     yield
     await engine.dispose()
@@ -94,15 +181,91 @@ app.middleware("http")(security_headers)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/api/v1")
-app.include_router(users.router, prefix="/api/v1")
-app.include_router(import_export.router, prefix="/api/v1")
-app.include_router(teachers.router, prefix="/api/v1")
+app.include_router(account_students.router, prefix="/api/v1")
+app.include_router(account_teachers.router, prefix="/api/v1")
+app.include_router(account_admins.router, prefix="/api/v1")
+app.include_router(imports.router, prefix="/api/v1")
+app.include_router(exports.router, prefix="/api/v1")
+app.include_router(planning.router, prefix="/api/v1")
 
 
 # ── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok", "service": settings.APP_NAME}
+
+
+@app.get("/health/db", tags=["System"])
+async def database_health_check():
+    expected_revision = _get_alembic_head_revision()
+
+    try:
+        current_revision = await _get_database_revision()
+    except RuntimeError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "service": settings.APP_NAME,
+                "error": str(exc),
+                "expected_revision": expected_revision,
+                "current_revision": None,
+            },
+        )
+
+    if current_revision != expected_revision:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "out_of_sync",
+                "service": settings.APP_NAME,
+                "expected_revision": expected_revision,
+                "current_revision": current_revision,
+                "hint": "Run `alembic upgrade head`.",
+            },
+        )
+
+    return {
+        "status": "ok",
+        "service": settings.APP_NAME,
+        "expected_revision": expected_revision,
+        "current_revision": current_revision,
+    }
+
+
+@app.get("/health/db/tables", tags=["System"])
+async def database_tables_health_check():
+    try:
+        table_status = await _get_critical_tables_status()
+    except RuntimeError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "service": settings.APP_NAME,
+                "error": str(exc),
+                "tables": None,
+            },
+        )
+
+    missing_tables = [name for name, exists in table_status.items() if not exists]
+    if missing_tables:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "missing_tables",
+                "service": settings.APP_NAME,
+                "tables": table_status,
+                "missing": missing_tables,
+                "hint": "Run `alembic upgrade head`.",
+            },
+        )
+
+    return {
+        "status": "ok",
+        "service": settings.APP_NAME,
+        "tables": table_status,
+    }
 
 
 # ── Root ──────────────────────────────────────────────────────────────────────

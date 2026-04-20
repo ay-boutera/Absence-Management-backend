@@ -1,139 +1,109 @@
-"""
-core/permissions.py — Role-Based Access Control (RBAC) Dependencies
-=====================================================================
-Implements FR-02 / EF-02: three roles with strictly defined permissions.
+from __future__ import annotations
 
-How FastAPI dependencies work:
-    A dependency is a function decorated with Depends() in a route.
-    FastAPI calls it automatically before the route handler runs.
-    If the dependency raises an exception, the route never executes.
-
-Example usage in a route:
-    @router.get("/admin-only")
-    async def admin_route(current_user: Account = Depends(require_admin)):
-        ...   # Only admins can reach this code
-
-The dependency chain:
-    get_current_user()      — reads & validates the JWT from cookie
-        ↓ used by
-    require_active_user()   — also checks is_active == True
-        ↓ used by
-    require_admin()         — also checks role == "admin"
-    require_teacher()       — also checks role == "teacher"
-    require_student()       — also checks role == "student"
-    require_admin_or_teacher() — checks role in ["admin", "teacher"]
-"""
-
+from datetime import datetime, timedelta, timezone
 from typing import Callable
+from uuid import UUID
+
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import datetime, timedelta, timezone
 
+from app.config import UserRole, settings
 from app.db import get_db
-from app.models.user import Account, UserRole, Admin, Teacher
-from app.helpers.security import get_token_from_cookie, decode_token, ACCESS_COOKIE_NAME
-from app.config import settings
-
-import uuid
+from app.helpers.role_users import RoleUser, get_user_by_id, user_role
+from app.helpers.security import ACCESS_COOKIE_NAME, decode_token, get_token_from_cookie
+from app.models import Admin, Teacher
 
 
-# ── Base Dependency: Extract & Validate JWT ────────────────────────────────────
-async def get_current_user(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> Account:
-    """
-    1. Extract access_token from the HttpOnly cookie
-    2. Decode and verify the JWT
-    3. Check the token is not blacklisted (logged out)
-    4. Load and return the Account from the database
-    """
-    # Step 1: Get token from cookie
-    token = get_token_from_cookie(request, ACCESS_COOKIE_NAME)
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated. Please log in.",
-        )
-
-    # Step 2: Decode JWT (raises 401 if invalid/expired)
+async def _resolve_user_from_token(token: str, db: AsyncSession) -> RoleUser:
     payload = decode_token(token)
 
-    # Ensure it's an access token (not a refresh token)
     if payload.get("type") != "access":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token type.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user_id: str = payload.get("sub")
+    user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token payload is missing subject.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
+    try:
+        parsed_user_id = UUID(user_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token subject is invalid.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
 
-    # Step 4: Load user from DB
-    result = await db.execute(select(Account).where(Account.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-
-    if not user:
+    user = await get_user_by_id(db, parsed_user_id)
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token_role = payload.get("role")
+    if token_role and token_role != user_role(user).value:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token role does not match user role.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return user
 
 
-# ── Active User Check ─────────────────────────────────────────────────────────
+async def get_current_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> RoleUser:
+    token = get_token_from_cookie(request, ACCESS_COOKIE_NAME)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Please log in.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await _resolve_user_from_token(token, db)
+
+
 async def require_active_user(
     request: Request,
-    current_user: Account = Depends(get_current_user),
+    current_user: RoleUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> Account:
-    """
-    Builds on get_current_user.
-    Additionally checks:
-        1. Account is active (not soft-deleted)
-        2. Session has not expired due to inactivity (FR-05 / EF-05)
-    Also updates last_activity on every authenticated request.
-    """
-    # Check soft-delete
+) -> RoleUser:
     if not current_user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated. Contact the administration.",
         )
 
-    # Check inactivity timeout (FR-05)
     if current_user.last_activity:
         inactivity_limit = timedelta(minutes=settings.SESSION_INACTIVITY_MINUTES)
-        time_since_activity = datetime.now(
-            timezone.utc
-        ) - current_user.last_activity.replace(tzinfo=timezone.utc)
+        last_activity = current_user.last_activity
+        if last_activity.tzinfo is None:
+            last_activity = last_activity.replace(tzinfo=timezone.utc)
+        time_since_activity = datetime.now(timezone.utc) - last_activity
         if time_since_activity > inactivity_limit:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session expired due to inactivity. Please log in again.",
             )
 
-    # Update last_activity timestamp
     current_user.last_activity = datetime.now(timezone.utc)
     db.add(current_user)
-    # Note: commit happens in get_db() after the route handler returns
-
     return current_user
 
 
-# ── Role Dependencies ─────────────────────────────────────────────────────────
-async def require_admin(
-    current_user: Account = Depends(require_active_user),
-) -> Account:
-    """Only Administration role can access routes protected by this dependency."""
-    if current_user.role != UserRole.ADMIN:
+async def require_admin(current_user: RoleUser = Depends(require_active_user)) -> RoleUser:
+    if user_role(current_user) != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Administrator role required.",
@@ -141,25 +111,14 @@ async def require_admin(
     return current_user
 
 
-async def require_super_admin(
-    current_user: Account = Depends(require_active_user),
-    db: AsyncSession = Depends(get_db),
-) -> Account:
-    """
-    Only super-admin accounts can access routes protected by this dependency.
-    Super admin is represented by admin_profile.admin_level == "super".
-    """
-    if current_user.role != UserRole.ADMIN:
+async def require_super_admin(current_user: RoleUser = Depends(require_active_user)) -> RoleUser:
+    if user_role(current_user) != UserRole.ADMIN or not isinstance(current_user, Admin):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Administrator role required.",
         )
 
-    admin_result = await db.execute(select(Admin).where(Admin.user_id == current_user.id))
-    admin_profile = admin_result.scalar_one_or_none()
-    admin_level = (admin_profile.admin_level if admin_profile else "regular") or "regular"
-
-    if admin_level.lower() != "super":
+    if (current_user.admin_level or "regular").lower() != "super":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Super admin role required.",
@@ -168,11 +127,8 @@ async def require_super_admin(
     return current_user
 
 
-async def require_teacher(
-    current_user: Account = Depends(require_active_user),
-) -> Account:
-    """Only Teacher/Invigilator role can access routes protected by this dependency."""
-    if current_user.role != UserRole.TEACHER:
+async def require_teacher(current_user: RoleUser = Depends(require_active_user)) -> RoleUser:
+    if user_role(current_user) != UserRole.TEACHER:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Teacher role required.",
@@ -180,25 +136,19 @@ async def require_teacher(
     return current_user
 
 
-async def require_student(
-    current_user: Account = Depends(require_active_user),
-) -> Account:
-    """Only Student role can access routes protected by this dependency."""
-    if current_user.role != UserRole.STUDENT:
+async def require_student(current_user: RoleUser = Depends(require_active_user)) -> RoleUser:
+    if user_role(current_user) != UserRole.STUDENT:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Student role required.",
         )
     return current_user
 
-    return current_user
-
 
 async def require_admin_or_teacher(
-    current_user: Account = Depends(require_active_user),
-) -> Account:
-    """Admin OR Teacher can access. Used for routes both roles share."""
-    if current_user.role not in (UserRole.ADMIN, UserRole.TEACHER):
+    current_user: RoleUser = Depends(require_active_user),
+) -> RoleUser:
+    if user_role(current_user) not in (UserRole.ADMIN, UserRole.TEACHER):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Administrator or Teacher role required.",
@@ -207,12 +157,8 @@ async def require_admin_or_teacher(
 
 
 def require_role(allowed_role: UserRole) -> Callable:
-    """Returns a dependency that checks if the user has a specific role."""
-
-    async def role_dependency(
-        current_user: Account = Depends(require_active_user),
-    ) -> Account:
-        if current_user.role != allowed_role:
+    async def role_dependency(current_user: RoleUser = Depends(require_active_user)) -> RoleUser:
+        if user_role(current_user) != allowed_role:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied. {allowed_role.value} role required.",
@@ -225,15 +171,10 @@ def require_role(allowed_role: UserRole) -> Callable:
 async def get_current_user_bearer(
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> Account:
-    """
-    Auth dependency for endpoints primarily documented with Bearer tokens.
-    Supports either:
-        - Authorization: Bearer <access_token>
-        - access_token cookie fallback (for cookie-based sessions)
-    """
+) -> RoleUser:
     authorization = request.headers.get("Authorization")
     token = ""
+
     if authorization:
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token:
@@ -251,59 +192,19 @@ async def get_current_user_bearer(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    payload = decode_token(token)
-    token_role = payload.get("role")
-    if not token_role:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token payload is missing role.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    if payload.get("type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token type.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token payload is missing subject.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    result = await db.execute(select(Account).where(Account.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
+    user = await _resolve_user_from_token(token, db)
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated. Contact the administration.",
         )
-
-    if user.role.value != token_role:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token role does not match user role.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
     return user
 
 
 async def require_admin_bearer(
-    current_user: Account = Depends(get_current_user_bearer),
-) -> Account:
-    if current_user.role != UserRole.ADMIN:
+    current_user: RoleUser = Depends(get_current_user_bearer),
+) -> RoleUser:
+    if user_role(current_user) != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Administrator role required.",
@@ -312,9 +213,9 @@ async def require_admin_bearer(
 
 
 async def require_admin_or_teacher_bearer(
-    current_user: Account = Depends(get_current_user_bearer),
-) -> Account:
-    if current_user.role not in (UserRole.ADMIN, UserRole.TEACHER):
+    current_user: RoleUser = Depends(get_current_user_bearer),
+) -> RoleUser:
+    if user_role(current_user) not in (UserRole.ADMIN, UserRole.TEACHER):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Administrator or Teacher role required.",
@@ -323,18 +224,15 @@ async def require_admin_or_teacher_bearer(
 
 
 async def require_can_import_data_bearer(
-    current_user: Account = Depends(get_current_user_bearer),
-    db: AsyncSession = Depends(get_db),
-) -> Account:
-    if current_user.role != UserRole.ADMIN:
+    current_user: RoleUser = Depends(get_current_user_bearer),
+) -> RoleUser:
+    if user_role(current_user) != UserRole.ADMIN or not isinstance(current_user, Admin):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Only administrators can import data.",
         )
 
-    admin_result = await db.execute(select(Admin).where(Admin.user_id == current_user.id))
-    admin_profile = admin_result.scalar_one_or_none()
-    if admin_profile is not None and not admin_profile.can_import_data:
+    if not current_user.can_import_data:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Import permission is disabled for this admin account.",
@@ -344,27 +242,20 @@ async def require_can_import_data_bearer(
 
 
 async def require_can_export_data_bearer(
-    current_user: Account = Depends(get_current_user_bearer),
-    db: AsyncSession = Depends(get_db),
-) -> Account:
-    if current_user.role == UserRole.ADMIN:
-        admin_result = await db.execute(
-            select(Admin).where(Admin.user_id == current_user.id)
-        )
-        admin_profile = admin_result.scalar_one_or_none()
-        if admin_profile is not None and not admin_profile.can_export_data:
+    current_user: RoleUser = Depends(get_current_user_bearer),
+) -> RoleUser:
+    role = user_role(current_user)
+
+    if role == UserRole.ADMIN:
+        if isinstance(current_user, Admin) and not current_user.can_export_data:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied. Export permission is disabled for this admin account.",
             )
         return current_user
 
-    if current_user.role == UserRole.TEACHER:
-        teacher_result = await db.execute(
-            select(Teacher).where(Teacher.user_id == current_user.id)
-        )
-        teacher_profile = teacher_result.scalar_one_or_none()
-        if teacher_profile is not None and not teacher_profile.can_export_data:
+    if role == UserRole.TEACHER:
+        if isinstance(current_user, Teacher) and not current_user.can_export_data:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied. Export permission is disabled for this teacher account.",

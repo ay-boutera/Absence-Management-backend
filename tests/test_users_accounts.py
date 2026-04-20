@@ -1,5 +1,5 @@
 import uuid
-from unittest.mock import AsyncMock, patch
+from contextlib import nullcontext
 
 import pytest
 import pytest_asyncio
@@ -11,7 +11,7 @@ from app.db import Base, get_db
 from app.helpers.security import hash_password
 from app.main import app
 from app.models.audit_log import AuditLog
-from app.models.user import Account, Admin, Student, Teacher, UserRole
+from app.models import Admin, Student, Teacher, UserRole
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 test_engine = create_async_engine(TEST_DB_URL, echo=False)
@@ -29,11 +29,7 @@ async def override_get_db():
 
 
 def mock_redis():
-    return patch(
-        "app.services.redis_service.RedisService.is_token_blacklisted",
-        new_callable=AsyncMock,
-        return_value=False,
-    )
+    return nullcontext()
 
 
 def fixture_password(role: str, index: int) -> str:
@@ -44,7 +40,6 @@ def fixture_password(role: str, index: int) -> str:
 async def setup_db():
     app.dependency_overrides[get_db] = override_get_db
     required_tables = [
-        Account.__table__,
         Admin.__table__,
         Teacher.__table__,
         Student.__table__,
@@ -73,7 +68,7 @@ async def setup_db():
 async def client():
     async with AsyncClient(
         transport=ASGITransport(app=app),
-        base_url="http://test",
+        base_url="https://test",
     ) as c:
         yield c
 
@@ -81,24 +76,17 @@ async def client():
 @pytest_asyncio.fixture
 async def admin_user():
     async with TestSessionLocal() as session:
-        user = Account(
+        user = Admin(
             id=uuid.uuid4(),
             first_name="Admin",
             last_name="User",
             email="a.admin@esi-sba.dz",
             hashed_password=hash_password("Admin@1234"),
-            role=UserRole.ADMIN,
             is_active=True,
+            department="Administration",
+            admin_level="super",
         )
         session.add(user)
-        await session.flush()
-        session.add(
-            Admin(
-                user_id=user.id,
-                department="Administration",
-                admin_level="super",
-            )
-        )
         await session.commit()
         await session.refresh(user)
         return user
@@ -107,24 +95,17 @@ async def admin_user():
 @pytest_asyncio.fixture
 async def regular_admin_user():
     async with TestSessionLocal() as session:
-        user = Account(
+        user = Admin(
             id=uuid.uuid4(),
             first_name="Regular",
             last_name="Admin",
             email="r.admin@esi-sba.dz",
             hashed_password=hash_password("Regular@1234"),
-            role=UserRole.ADMIN,
             is_active=True,
+            department="Administration",
+            admin_level="regular",
         )
         session.add(user)
-        await session.flush()
-        session.add(
-            Admin(
-                user_id=user.id,
-                department="Administration",
-                admin_level="regular",
-            )
-        )
         await session.commit()
         await session.refresh(user)
         return user
@@ -133,14 +114,14 @@ async def regular_admin_user():
 @pytest_asyncio.fixture
 async def teacher_user():
     async with TestSessionLocal() as session:
-        user = Account(
+        user = Teacher(
             id=uuid.uuid4(),
             first_name="Teacher",
             last_name="User",
             email="t.teacher@esi-sba.dz",
             hashed_password=hash_password("Teacher@1234"),
-            role=UserRole.TEACHER,
             is_active=True,
+            employee_id="EMP-T-001",
         )
         session.add(user)
         await session.commit()
@@ -175,7 +156,7 @@ async def test_create_first_super_admin_public_success(client: AsyncClient):
 
     async with TestSessionLocal() as session:
         result = await session.execute(
-            select(Admin).where(Admin.user_id == uuid.UUID(payload["id"]))
+            select(Admin).where(Admin.id == uuid.UUID(payload["id"]))
         )
         created_profile = result.scalar_one_or_none()
         assert created_profile is not None
@@ -183,7 +164,7 @@ async def test_create_first_super_admin_public_success(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_create_super_admin_blocked_when_one_exists(client: AsyncClient, admin_user: Account):
+async def test_create_super_admin_blocked_when_one_exists(client: AsyncClient, admin_user: Admin):
     response = await client.post(
         "/api/v1/accounts/super-admins",
         json={
@@ -199,7 +180,7 @@ async def test_create_super_admin_blocked_when_one_exists(client: AsyncClient, a
 
 
 @pytest.mark.asyncio
-async def test_create_student_account_success(client: AsyncClient, admin_user: Account):
+async def test_create_student_account_success(client: AsyncClient, admin_user: Admin):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
     with mock_redis():
@@ -228,7 +209,7 @@ async def test_create_student_account_success(client: AsyncClient, admin_user: A
 
 
 @pytest.mark.asyncio
-async def test_create_teacher_account_success(client: AsyncClient, admin_user: Account):
+async def test_create_teacher_account_success(client: AsyncClient, admin_user: Admin):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
     with mock_redis():
@@ -257,7 +238,7 @@ async def test_create_teacher_account_success(client: AsyncClient, admin_user: A
 
 
 @pytest.mark.asyncio
-async def test_create_admin_account_success(client: AsyncClient, admin_user: Account):
+async def test_create_admin_account_success(client: AsyncClient, admin_user: Admin):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
     with mock_redis():
@@ -281,7 +262,7 @@ async def test_create_admin_account_success(client: AsyncClient, admin_user: Acc
 
 @pytest.mark.asyncio
 async def test_regular_admin_cannot_create_admin(
-    client: AsyncClient, regular_admin_user: Account
+    client: AsyncClient, regular_admin_user: Admin
 ):
     await login(client, "r.admin@esi-sba.dz", "Regular@1234")
 
@@ -300,7 +281,7 @@ async def test_regular_admin_cannot_create_admin(
 
 
 @pytest.mark.asyncio
-async def test_teacher_cannot_create_accounts(client: AsyncClient, teacher_user: Account):
+async def test_teacher_cannot_create_accounts(client: AsyncClient, teacher_user: Teacher):
     await login(client, "t.teacher@esi-sba.dz", "Teacher@1234")
 
     with mock_redis():
@@ -321,7 +302,7 @@ async def test_teacher_cannot_create_accounts(client: AsyncClient, teacher_user:
 
 
 @pytest.mark.asyncio
-async def test_duplicate_student_id_returns_400(client: AsyncClient, admin_user: Account):
+async def test_duplicate_student_id_returns_400(client: AsyncClient, admin_user: Admin):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
     with mock_redis():
@@ -358,7 +339,7 @@ async def test_duplicate_student_id_returns_400(client: AsyncClient, admin_user:
 @pytest.mark.asyncio
 async def test_get_admins_returns_admin_accounts_only(
     client: AsyncClient,
-    admin_user: Account,
+    admin_user: Admin,
 ):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
@@ -384,7 +365,7 @@ async def test_get_admins_returns_admin_accounts_only(
 
 
 @pytest.mark.asyncio
-async def test_get_account_by_id_success(client: AsyncClient, admin_user: Account):
+async def test_get_account_by_id_success(client: AsyncClient, admin_user: Admin):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
     with mock_redis():
@@ -397,7 +378,7 @@ async def test_get_account_by_id_success(client: AsyncClient, admin_user: Accoun
 
 
 @pytest.mark.asyncio
-async def test_get_account_by_id_not_found(client: AsyncClient, admin_user: Account):
+async def test_get_account_by_id_not_found(client: AsyncClient, admin_user: Admin):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
     missing_id = uuid.uuid4()
 
@@ -409,7 +390,7 @@ async def test_get_account_by_id_not_found(client: AsyncClient, admin_user: Acco
 
 
 @pytest.mark.asyncio
-async def test_update_teacher_account_success(client: AsyncClient, admin_user: Account):
+async def test_update_teacher_account_success(client: AsyncClient, admin_user: Admin):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
     with mock_redis():
@@ -440,7 +421,7 @@ async def test_update_teacher_account_success(client: AsyncClient, admin_user: A
 
     async with TestSessionLocal() as session:
         result = await session.execute(
-            select(Teacher).where(Teacher.user_id == uuid.UUID(teacher_id))
+            select(Teacher).where(Teacher.id == uuid.UUID(teacher_id))
         )
         teacher_profile = result.scalar_one_or_none()
         assert teacher_profile is not None
@@ -450,7 +431,7 @@ async def test_update_teacher_account_success(client: AsyncClient, admin_user: A
 @pytest.mark.asyncio
 async def test_update_account_duplicate_email_returns_400(
     client: AsyncClient,
-    admin_user: Account,
+    admin_user: Admin,
 ):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
@@ -489,7 +470,7 @@ async def test_update_account_duplicate_email_returns_400(
 @pytest.mark.asyncio
 async def test_update_account_status_deactivate_and_activate(
     client: AsyncClient,
-    admin_user: Account,
+    admin_user: Admin,
 ):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
@@ -525,7 +506,7 @@ async def test_update_account_status_deactivate_and_activate(
 
 
 @pytest.mark.asyncio
-async def test_admin_cannot_deactivate_self(client: AsyncClient, admin_user: Account):
+async def test_admin_cannot_deactivate_self(client: AsyncClient, admin_user: Admin):
     await login(client, "a.admin@esi-sba.dz", "Admin@1234")
 
     with mock_redis():

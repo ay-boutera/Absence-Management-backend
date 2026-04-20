@@ -1,8 +1,12 @@
 # Create Pydantic schemas
 
 from .auth import *
-from .user import *
+from .account_admins import *
+from .account_students import *
+from .account_teachers import *
 from .import_export import *
+
+UserResponse = AdminAccountResponse | TeacherAccountResponse | StudentAccountResponse
 
 __all__ = [
     "LoginRequest",
@@ -14,15 +18,17 @@ __all__ = [
     "MessageResponse",
     "OAuthStateResponse",
     "OAuthLoginResponse",
-    "AccountResponse",
-    "AccountCreate",
+    "UserResponse",
     "StudentAccountCreate",
     "TeacherAccountCreate",
     "AdminAccountCreate",
+    "StudentAccountResponse",
+    "TeacherAccountResponse",
+    "AdminAccountResponse",
     "StudentAccountUpdate",
     "TeacherAccountUpdate",
     "AdminAccountUpdate",
-    "AccountStatusUpdate",
+    "UserStatusUpdate",
     "ImportErrorItem",
     "ImportResponse",
 ]
