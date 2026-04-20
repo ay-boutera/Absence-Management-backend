@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 import uuid
 from datetime import datetime, time
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import JSONResponse
@@ -28,6 +31,7 @@ from app.helpers.permissions import (
     get_current_user_bearer,
     require_can_import_data_bearer,
 )
+from app.config.enums import SessionType
 from app.models import ImportHistory, ImportType, PlanningSession
 from app.models import Teacher, UserRole
 from app.models.student import Student as StudentUser
@@ -49,7 +53,7 @@ VALID_SPECIALITIES = {"ISI", "SIW", "IASD", "CyS"}
 VALID_SECTIONS = set(string.ascii_uppercase)
 GROUP_RE = re.compile(r"^G\d+$")
 VALID_DAYS = {"Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi"}
-VALID_TYPES = {"Cours", "TD", "TP", "TD/TP", "Cours/TP", "Cours/TD/TP"}
+VALID_TYPES = set(e.value for e in SessionType)
 VALID_SEMESTERS = {"S1", "S2"}
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 
@@ -103,7 +107,6 @@ def _make_upsert_key(row: dict) -> tuple:
         row["type"],
         row["subject"],
         row["group"] or None,
-        row["teacher_employee_id"] or None,   # employee_id string for dedup
     )
 
 
@@ -125,6 +128,7 @@ Import a weekly timetable from a UTF-8, comma-delimited CSV file.
 - Lines starting with `#` are skipped (comments).
 - All-or-nothing: if **any** row fails validation, **nothing** is written.
 - On success, existing sessions matching the upsert key are updated.
+- Multiple teachers can be assigned to a session by separating their IDs with a `/` (e.g. `ENS126 / ENS137`). Unrecognized teacher IDs will log a warning and be ignored without failing the row.
 
 **Auth:** Admin only (JWT).
 """,
@@ -297,13 +301,15 @@ async def import_planning_csv(
             row_errors += 1
 
         # --- teacher lookup ---
-        teacher_obj: Optional[Teacher] = None
+        found_teachers: list[Teacher] = []
         if teacher_raw:
-            teacher_obj = teacher_by_employee_id.get(teacher_raw)
-            if teacher_obj is None:
-                add_error(n, "teacher",
-                        f"id_enseignant '{teacher_raw}' introuvable dans la base")
-                row_errors += 1
+            raw_ids = [t.strip() for t in teacher_raw.split("/") if t.strip()]
+            for raw_id in raw_ids:
+                t_obj = teacher_by_employee_id.get(raw_id)
+                if t_obj is None:
+                    logger.warning(f"Ligne {n}: id_enseignant '{raw_id}' introuvable dans la base (ignoré).")
+                else:
+                    found_teachers.append(t_obj)
 
         parsed_rows.append({
             "line": n,
@@ -318,8 +324,7 @@ async def import_planning_csv(
             "parsed_end": parsed_end,
             "type": sess_type,
             "subject": subject,
-            "teacher_employee_id": teacher_raw or None,
-            "teacher_id": teacher_obj.id if teacher_obj else None,
+            "teacher_objs": found_teachers,
             "room": room,
             "group": group,
             "has_error": row_errors > 0,
@@ -386,11 +391,6 @@ async def import_planning_csv(
                 else:
                     filters.append(PlanningSession.group == pr["group"])
 
-                if pr["teacher_id"] is None:
-                    filters.append(PlanningSession.teacher_id.is_(None))
-                else:
-                    filters.append(PlanningSession.teacher_id == pr["teacher_id"])
-
                 existing_result = await db.execute(
                     select(PlanningSession).where(and_(*filters))
                 )
@@ -409,7 +409,7 @@ async def import_planning_csv(
                         subject=pr["subject"],
                         room=pr["room"],
                         group=pr["group"],
-                        teacher_id=pr["teacher_id"],
+                        teachers=pr["teacher_objs"],
                     )
                     db.add(session)
                     imported_count += 1
@@ -417,6 +417,7 @@ async def import_planning_csv(
                     # Update mutable fields only
                     session.time_end = pr["parsed_end"]
                     session.room = pr["room"]
+                    session.teachers = pr["teacher_objs"]
                     db.add(session)
                     updated_count += 1
 
@@ -481,7 +482,7 @@ async def my_schedule(
 
     # Base query with teacher eagerly loaded
     base_q = select(PlanningSession).options(
-        selectinload(PlanningSession.teacher)
+        selectinload(PlanningSession.teachers)
     )
 
     if role == UserRole.TEACHER:
@@ -495,7 +496,7 @@ async def my_schedule(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Profil enseignant introuvable.",
             )
-        base_q = base_q.where(PlanningSession.teacher_id == teacher.id)
+        base_q = base_q.where(PlanningSession.teachers.any(Teacher.id == teacher.id))
 
     elif role == UserRole.STUDENT:
         student_result = await db.execute(
@@ -577,14 +578,15 @@ async def my_schedule(
     sessions: list[PlanningSession] = list(result.scalars().all())
 
     def _serialize(s: PlanningSession) -> PlanningSessionOut:
-        teacher_info: Optional[TeacherInfo] = None
-        if s.teacher is not None:
-            teacher_info = TeacherInfo(
-                id=s.teacher.id,
-                employee_id=s.teacher.employee_id,
-                first_name=s.teacher.first_name,
-                last_name=s.teacher.last_name,
+        teacher_infos = [
+            TeacherInfo(
+                id=t.id,
+                employee_id=t.employee_id,
+                first_name=t.first_name,
+                last_name=t.last_name,
             )
+            for t in s.teachers
+        ]
         return PlanningSessionOut(
             id=s.id,
             day=s.day,
@@ -598,7 +600,7 @@ async def my_schedule(
             section=s.section,
             speciality=s.speciality,
             semester=s.semester,
-            teacher=teacher_info,
+            teachers=teacher_infos,
         )
 
     return ScheduleResponse(

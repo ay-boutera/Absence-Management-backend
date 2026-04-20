@@ -34,7 +34,7 @@ class PlanningSessionOut(BaseModel):
     section: Optional[str] = None
     speciality: Optional[str] = None
     semester: str
-    teacher: Optional[TeacherInfo] = None
+    teachers: list[TeacherInfo] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
