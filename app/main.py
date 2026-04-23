@@ -1,12 +1,6 @@
 """
 main.py — FastAPI Application Entry Point
 ==========================================
-This is where the app is assembled:
-    1. Create the FastAPI instance
-    2. Configure CORS (which origins can call this API)
-    3. Add security middleware (rate limiting)
-    4. Wire in all routers
-    5. Add startup/shutdown hooks
 
 Run with:
     uvicorn app.main:app --reload
@@ -27,22 +21,22 @@ from sqlalchemy.exc import SQLAlchemyError
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from starlette.middleware.sessions import SessionMiddleware  # ← NEW
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.middlewares.security import security_headers
 from app.config import settings
 from app.db import engine
 from app.routers import (
-    account_admins,
-    account_students,
-    account_teachers,
+    absences,
     auth,
     exports,
-    imports,
-    planning,
+    schedule,
+    sessions,
 )
+from app.routers.accounts import router as accounts_router
+from app.routers.imports import router as imports_router
+from app.routers.students import router as students_router
 from app.services.email_service import log_smtp_health_check
-
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +48,8 @@ CRITICAL_TABLES = (
     "password_reset_tokens",
     "import_history",
     "import_export_logs",
+    "sessions",
+    "absences",
 )
 
 
@@ -73,8 +69,7 @@ async def _get_database_revision() -> str | None:
             return result.scalar_one_or_none()
     except SQLAlchemyError as exc:
         logger.exception(
-            "Database revision check failed while reading alembic_version table. "
-            "Run `alembic upgrade head` before starting the API."
+            "Database revision check failed. Run `alembic upgrade head` before starting the API."
         )
         raise RuntimeError("Database revision check failed") from exc
 
@@ -83,13 +78,7 @@ async def _get_critical_tables_status() -> dict[str, bool]:
     try:
         async with engine.connect() as connection:
             result = await connection.execute(
-                text(
-                    """
-                    SELECT table_name
-                    FROM information_schema.tables
-                    WHERE table_schema = current_schema()
-                    """
-                )
+                text("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()")
             )
             existing_tables = {row[0] for row in result.fetchall()}
     except SQLAlchemyError as exc:
@@ -105,8 +94,7 @@ async def _assert_database_revision_is_current() -> None:
 
     if current_revision != expected_revision:
         logger.error(
-            "Database revision mismatch detected: database=%s expected=%s. "
-            "Run `alembic upgrade head` before starting the API.",
+            "Database revision mismatch: database=%s expected=%s. Run `alembic upgrade head`.",
             current_revision,
             expected_revision,
         )
@@ -115,11 +103,11 @@ async def _assert_database_revision_is_current() -> None:
         )
 
 
-# ── Rate Limiter ──────────────────────────────────────────────────────────────
+# ── Rate Limiter ───────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
 
 
-# ── Startup / Shutdown ────────────────────────────────────────────────────────
+# ── Startup / Shutdown ─────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _assert_database_revision_is_current()
@@ -129,7 +117,7 @@ async def lifespan(app: FastAPI):
     print("✅ Database connection pool closed")
 
 
-# ── FastAPI App Instance ──────────────────────────────────────────────────────
+# ── FastAPI App Instance ───────────────────────────────────────────────────────
 app = FastAPI(
     title=settings.APP_NAME,
     description="Backend API for the ESI-SBA Absence Management System",
@@ -140,25 +128,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Attach rate limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
-# ── Session Middleware ────────────────────────────────────────────────────────
-# MUST be added BEFORE CORSMiddleware so the session cookie is available
-# during the OAuth callback redirect.
-# Used exclusively to carry the OAuth `state` token between the two OAuth steps.
+# ── Session Middleware (OAuth CSRF protection) ─────────────────────────────────
 app.add_middleware(
     SessionMiddleware,
-    secret_key=settings.SECRET_KEY,  # reuse your existing secret
+    secret_key=settings.SECRET_KEY,
     same_site="none" if settings.ENVIRONMENT == "production" else "lax",
     https_only=settings.ENVIRONMENT == "production",
-    max_age=600,  # 10 minutes — enough time to complete OAuth
+    max_age=600,
 )
 
 
-# ── CORS Middleware ───────────────────────────────────────────────────────────
+# ── CORS Middleware ────────────────────────────────────────────────────────────
 cors_kwargs = {
     "allow_credentials": True,
     "allow_methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -175,21 +159,22 @@ else:
 app.add_middleware(CORSMiddleware, **cors_kwargs)
 
 
-# ── Security Headers Middleware ───────────────────────────────────────────────
+# ── Security Headers ───────────────────────────────────────────────────────────
 app.middleware("http")(security_headers)
 
 
-# ── Routers ───────────────────────────────────────────────────────────────────
-app.include_router(auth.router, prefix="/api/v1")
-app.include_router(account_students.router, prefix="/api/v1")
-app.include_router(account_teachers.router, prefix="/api/v1")
-app.include_router(account_admins.router, prefix="/api/v1")
-app.include_router(imports.router, prefix="/api/v1")
-app.include_router(exports.router, prefix="/api/v1")
-app.include_router(planning.router, prefix="/api/v1")
+# ── Routers ────────────────────────────────────────────────────────────────────
+app.include_router(auth.router,       prefix="/api/v1")
+app.include_router(accounts_router,   prefix="/api/v1")  # /accounts/*
+app.include_router(imports_router,    prefix="/api/v1")  # /import/*
+app.include_router(exports.router,    prefix="/api/v1")  # /export/*
+app.include_router(schedule.router,   prefix="/api/v1")  # /planning/my-schedule
+app.include_router(sessions.router,   prefix="/api/v1")  # /sessions/*
+app.include_router(absences.router,   prefix="/api/v1")  # /absences/*
+app.include_router(students_router,   prefix="/api/v1")  # /students/*
 
 
-# ── Health Check ─────────────────────────────────────────────────────────────
+# ── Health Checks ──────────────────────────────────────────────────────────────
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok", "service": settings.APP_NAME}
@@ -261,14 +246,9 @@ async def database_tables_health_check():
             },
         )
 
-    return {
-        "status": "ok",
-        "service": settings.APP_NAME,
-        "tables": table_status,
-    }
+    return {"status": "ok", "service": settings.APP_NAME, "tables": table_status}
 
 
-# ── Root ──────────────────────────────────────────────────────────────────────
 @app.get("/", tags=["System"])
 async def root():
     return {"message": "AMS API is running", "docs": "/api/v1/docs"}

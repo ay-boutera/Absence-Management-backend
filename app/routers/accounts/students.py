@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import UserRole
 from app.db import get_db
-from app.helpers.permissions import require_admin_or_teacher, require_role
+from app.helpers.permissions import require_role
 from app.helpers.role_users import list_users_by_role
 from app.schemas import (
     StudentAccountCreate,
@@ -41,7 +41,7 @@ async def create_student_account(
 @router.get("/students", response_model=List[StudentAccountResponse], summary="Get Students")
 async def get_students(
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_admin_or_teacher),
+    current_user=Depends(require_role(UserRole.ADMIN)),
 ):
     return await list_users_by_role(db, UserRole.STUDENT)
 
