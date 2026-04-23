@@ -1,11 +1,14 @@
 from app.config import UserRole
 from app.config.enums import (
+    AbsenceSourceEnum,
     AcademicYear,
+    CorrectionStatusEnum,
     ImportExportAction,
     ImportExportDataType,
     ImportExportFileType,
     ImportType,
     SectionEnum,
+    SessionStatusEnum,
     SessionType,
     SpecialityEnum,
 )
@@ -13,13 +16,14 @@ from app.models.admin import Admin
 from app.models.teacher import Teacher
 from app.models.student import AcademicStudent, Student, StudentProfile, StudentUser
 from app.models.password_reset import PasswordResetToken
-from .absence import Absence
+from .absence import Absence, AbsenceCorrection
 from .audit_log import AuditLog, ActionType
 from .import_export_log import ImportExportLog
 from .import_history import ImportHistory
 from .module import Module
 from .planning_session import PlanningSession
 from .salle import Salle
+from .session import Session, SessionAttendanceSummary
 
 __all__ = [
     # Shared role models
@@ -30,7 +34,7 @@ __all__ = [
     "Admin",
     "Teacher",
     "Student",
-    "StudentUser",  # backward-compat alias
+    "StudentUser",
     "StudentProfile",
 
     # Audit / academic
@@ -40,15 +44,23 @@ __all__ = [
     "Module",
     "Salle",
     "PlanningSession",
+    "Session",
+    "SessionAttendanceSummary",
     "Absence",
+    "AbsenceCorrection",
     "ImportHistory",
     "ImportExportLog",
+
+    # Enums
+    "AbsenceSourceEnum",
+    "AcademicYear",
+    "CorrectionStatusEnum",
     "ImportExportAction",
     "ImportExportDataType",
     "ImportExportFileType",
     "ImportType",
-    "AcademicYear",
     "SectionEnum",
-    "SpecialityEnum",
+    "SessionStatusEnum",
     "SessionType",
+    "SpecialityEnum",
 ]

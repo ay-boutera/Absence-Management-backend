@@ -67,6 +67,8 @@ class Teacher(Base):
         back_populates="teacher",
         cascade="all, delete-orphan",
     )
+    sessions = relationship("Session", back_populates="teacher")
+
     def __repr__(self):
         return f"<Teacher {self.email} [{self.employee_id}]>"
 

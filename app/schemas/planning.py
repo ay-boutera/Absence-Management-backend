@@ -52,3 +52,4 @@ class PlanningImportResponse(BaseModel):
     errors: int = Field(..., example=0)
     error_report: list[dict] = Field(default_factory=list)
     history_id: Optional[UUID] = None
+    sessions_generated: int = Field(default=0, example=704, description="Number of concrete Session rows created")

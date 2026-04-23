@@ -88,3 +88,22 @@ class SpecialityEnum(str, PyEnum):
     SIW = "SIW"
     IASD = "IASD"
     CYS = "CyS"
+
+
+class SessionStatusEnum(str, PyEnum):
+    SCHEDULED = "SCHEDULED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+
+
+class AbsenceSourceEnum(str, PyEnum):
+    PWA = "PWA"
+    MANUAL = "MANUAL"
+    IMPORT = "IMPORT"
+
+
+class CorrectionStatusEnum(str, PyEnum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
