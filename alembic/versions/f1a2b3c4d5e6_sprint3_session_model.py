@@ -24,7 +24,7 @@ from app.db.database import Base
 from app import models as _models  # noqa: F401 — registers all ORM models
 
 revision: str = "f1a2b3c4d5e6"
-down_revision: Union[str, None] = "e9c1a7b2d4f6"
+down_revision: Union[str, None] = "845507976fa6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
