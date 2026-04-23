@@ -88,6 +88,7 @@ class AcademicStudent(Base):
     niveau = Column(String(50), nullable=False)
     groupe = Column(String(50), nullable=False)
     email = Column(String(255), nullable=False)
+    status = Column(String(20), nullable=False, default="normal")
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

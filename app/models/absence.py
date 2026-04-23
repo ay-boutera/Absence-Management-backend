@@ -51,6 +51,7 @@ class Absence(Base):
     )
 
     is_absent = Column(Boolean, default=True, nullable=False)
+    participation = Column(String(10), nullable=True)
     source = Column(
         SQLAlchemyEnum(AbsenceSourceEnum, values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,

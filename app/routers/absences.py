@@ -3,7 +3,6 @@ routers/absences.py — Absence Recording Endpoints
 ===================================================
 
 POST /api/v1/absences            One-tap UPSERT: mark student absent or present. Toggles is_absent on re-tap (US-19).
-
 GET  /api/v1/absences            List absences for a session (teacher/admin).
 
 POST /api/v1/absences/corrections  Request a correction (US-22, US-23).

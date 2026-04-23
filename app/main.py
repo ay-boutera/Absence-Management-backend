@@ -35,6 +35,7 @@ from app.routers import (
 )
 from app.routers.accounts import router as accounts_router
 from app.routers.imports import router as imports_router
+from app.routers.students import router as students_router
 from app.services.email_service import log_smtp_health_check
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ app.include_router(exports.router,    prefix="/api/v1")  # /export/*
 app.include_router(schedule.router,   prefix="/api/v1")  # /planning/my-schedule
 app.include_router(sessions.router,   prefix="/api/v1")  # /sessions/*
 app.include_router(absences.router,   prefix="/api/v1")  # /absences/*
+app.include_router(students_router,   prefix="/api/v1")  # /students/*
 
 
 # ── Health Checks ──────────────────────────────────────────────────────────────

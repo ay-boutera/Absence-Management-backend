@@ -23,7 +23,7 @@ from .import_history import ImportHistory
 from .module import Module
 from .planning_session import PlanningSession
 from .salle import Salle
-from .session import Session, SessionAttendanceSummary
+from .session import Session, SessionAttendanceSummary, session_groups, session_students
 
 __all__ = [
     # Shared role models
@@ -46,6 +46,8 @@ __all__ = [
     "PlanningSession",
     "Session",
     "SessionAttendanceSummary",
+    "session_groups",
+    "session_students",
     "Absence",
     "AbsenceCorrection",
     "ImportHistory",

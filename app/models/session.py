@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     SmallInteger,
     String,
+    Table,
     Time,
     UniqueConstraint,
 )
@@ -19,6 +20,38 @@ from sqlalchemy.orm import relationship
 
 from app.db import Base
 from app.config.enums import SessionStatusEnum, SessionType
+
+
+# ── Association tables ─────────────────────────────────────────────────────────
+
+session_groups = Table(
+    "session_groups",
+    Base.metadata,
+    Column(
+        "session_id",
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("group_name", String(50), primary_key=True),
+)
+
+session_students = Table(
+    "session_students",
+    Base.metadata,
+    Column(
+        "session_id",
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "student_matricule",
+        String(50),
+        ForeignKey("students.matricule", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
 
 
 class Session(Base):

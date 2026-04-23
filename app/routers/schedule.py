@@ -1,7 +1,6 @@
 """
 routers/schedule.py — Weekly Timetable Endpoint
 ================================================
-
 GET /api/v1/planning/my-schedule   Returns the weekly schedule for the authenticated user (teacher, student, admin).
 """
 
