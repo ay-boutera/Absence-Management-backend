@@ -66,6 +66,51 @@ async def log_smtp_health_check() -> None:
         logger.error("SMTP health check failed: %s", str(exc))
 
 
+async def send_weekly_report_email(
+    recipients: list[str],
+    stats: dict,
+    week_label: str,
+) -> bool:
+    """Send weekly absence summary to supervisors (US-54)."""
+    by_filiere_rows = "".join(
+        f"<tr><td>{r['filiere']}</td><td>{r['absences']}</td><td>{r['rate']}%</td></tr>"
+        for r in stats.get("by_filiere", [])
+    )
+    html = f"""
+    <h2 style="color:#0d2850">ESI-SBA — Rapport Hebdomadaire des Absences</h2>
+    <p><strong>Semaine :</strong> {week_label}</p>
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%">
+      <tr style="background:#0d2850;color:white">
+        <th>Indicateur</th><th>Valeur</th>
+      </tr>
+      <tr><td>Total enregistrements</td><td>{stats.get("total_records", 0)}</td></tr>
+      <tr><td>Total absences</td><td>{stats.get("total_absences", 0)}</td></tr>
+      <tr><td>Taux global</td><td>{stats.get("overall_rate", 0)}%</td></tr>
+    </table>
+    <br/>
+    <h3>Répartition par filière</h3>
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">
+      <tr style="background:#1a53a0;color:white"><th>Filière</th><th>Absences</th><th>Taux</th></tr>
+      {by_filiere_rows}
+    </table>
+    <p style="color:gray;font-size:12px">Rapport généré automatiquement par le Système de Gestion des Absences ESI-SBA.</p>
+    """
+    message = MessageSchema(
+        subject=f"Rapport hebdomadaire absences — {week_label}",
+        recipients=recipients,
+        body=html,
+        subtype=MessageType.html,
+    )
+    fm = FastMail(conf)
+    try:
+        await fm.send_message(message)
+        logger.info("Weekly report sent to %s", recipients)
+        return True
+    except Exception as exc:
+        logger.error("Failed to send weekly report: %s", exc)
+        return False
+
+
 async def send_justification_status_email(
     email: str,
     full_name: str,

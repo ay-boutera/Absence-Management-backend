@@ -114,3 +114,11 @@ class JustificationStatusEnum(str, PyEnum):
     EN_ATTENTE = "en_attente"
     JUSTIFIEE = "justifiee"
     REJETEE = "rejetee"
+
+
+class AbsenceMotifEnum(str, PyEnum):
+    MEDICAL = "medical"
+    ADMINISTRATIF = "administratif"
+    FAMILIAL = "familial"
+    SPORTIF_CULTUREL = "sportif_culturel"
+    AUTRE = "autre"

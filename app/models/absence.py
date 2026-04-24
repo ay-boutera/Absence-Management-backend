@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db import Base
-from app.config.enums import AbsenceSourceEnum, CorrectionStatusEnum, JustificationStatusEnum
+from app.config.enums import AbsenceMotifEnum, AbsenceSourceEnum, CorrectionStatusEnum, JustificationStatusEnum
 
 
 class Absence(Base):
@@ -52,6 +52,10 @@ class Absence(Base):
 
     is_absent = Column(Boolean, default=True, nullable=False)
     participation = Column(String(10), nullable=True)
+    motif = Column(
+        SQLAlchemyEnum(AbsenceMotifEnum, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=True,
+    )
     source = Column(
         SQLAlchemyEnum(AbsenceSourceEnum, values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,

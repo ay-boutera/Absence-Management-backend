@@ -33,6 +33,7 @@ from app.routers import (
     justifications,
     schedule,
     sessions,
+    stats,
 )
 from app.routers.accounts import router as accounts_router
 from app.routers.imports import router as imports_router
@@ -173,6 +174,7 @@ app.include_router(schedule.router,   prefix="/api/v1")  # /planning/my-schedule
 app.include_router(sessions.router,   prefix="/api/v1")  # /sessions/*
 app.include_router(absences.router,        prefix="/api/v1")  # /absences/*
 app.include_router(justifications.router,  prefix="/api/v1")  # /justifications/*
+app.include_router(stats.router,           prefix="/api/v1")  # /stats/*
 app.include_router(students_router,        prefix="/api/v1")  # /students/*
 
 
