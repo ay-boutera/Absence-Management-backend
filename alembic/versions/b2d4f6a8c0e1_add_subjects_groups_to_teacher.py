@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
 
@@ -20,8 +21,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("teacher_users", sa.Column("subjects", sa.Text(), nullable=True))
-    op.add_column("teacher_users", sa.Column("groups", sa.Text(), nullable=True))
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if "teacher_users" in inspector.get_table_names():
+        cols = [c["name"] for c in inspector.get_columns("teacher_users")]
+        if "subjects" not in cols:
+            op.add_column("teacher_users", sa.Column("subjects", sa.Text(), nullable=True))
+        if "groups" not in cols:
+            op.add_column("teacher_users", sa.Column("groups", sa.Text(), nullable=True))
 
     op.execute("ALTER TYPE importexportdatatype ADD VALUE IF NOT EXISTS 'teachers'")
 

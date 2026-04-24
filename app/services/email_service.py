@@ -66,6 +66,59 @@ async def log_smtp_health_check() -> None:
         logger.error("SMTP health check failed: %s", str(exc))
 
 
+async def send_justification_status_email(
+    email: str,
+    full_name: str,
+    status: str,
+    admin_comment: str | None,
+    session_info: str,
+) -> bool:
+    """
+    Notify a student that their justification was approved or rejected (US-32).
+    """
+    if status == "justifiee":
+        subject = "Justificatif accepté — AMS"
+        status_label = "accepté"
+        color = "#16a34a"
+        body_extra = "<p>Votre absence a été justifiée avec succès.</p>"
+    else:
+        subject = "Justificatif rejeté — AMS"
+        status_label = "rejeté"
+        color = "#dc2626"
+        comment_block = (
+            f"<p><strong>Motif du refus :</strong> {admin_comment}</p>"
+            if admin_comment
+            else ""
+        )
+        body_extra = f"<p>Votre justificatif a été rejeté.</p>{comment_block}"
+
+    html = f"""
+    <p>Bonjour {full_name},</p>
+    <p>
+      Le statut de votre justificatif pour la séance <strong>{session_info}</strong>
+      a été mis à jour :
+      <span style="color:{color};font-weight:bold">{status_label.upper()}</span>.
+    </p>
+    {body_extra}
+    <p>Connectez-vous à l'application pour consulter les détails.</p>
+    """
+
+    message = MessageSchema(
+        subject=subject,
+        recipients=[email],
+        body=html,
+        subtype=MessageType.html,
+    )
+    fm = FastMail(conf)
+    try:
+        await fm.send_message(message)
+        logger.info("Justification status email sent to %s (status=%s)", email, status)
+        return True
+    except Exception as exc:
+        logger.error("Failed to send justification email to %s: %s", email, exc)
+        return False
+
+
 async def send_password_reset_email(email: str, full_name: str, token: str) -> bool:
     """
     Send a password reset email to the user.

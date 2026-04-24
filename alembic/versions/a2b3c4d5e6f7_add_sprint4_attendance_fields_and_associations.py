@@ -15,6 +15,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
 revision: str = "a2b3c4d5e6f7"
@@ -24,61 +25,71 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    existing_tables = inspector.get_table_names()
+
     # ── absences: add participation ───────────────────────────────────────────
-    op.add_column(
-        "absences",
-        sa.Column("participation", sa.String(10), nullable=True),
-    )
+    absence_cols = [c["name"] for c in inspector.get_columns("absences")]
+    if "participation" not in absence_cols:
+        op.add_column(
+            "absences",
+            sa.Column("participation", sa.String(10), nullable=True),
+        )
 
     # ── students: add status ──────────────────────────────────────────────────
-    op.add_column(
-        "students",
-        sa.Column(
-            "status",
-            sa.String(20),
-            server_default="normal",
-            nullable=False,
-        ),
-    )
+    student_cols = [c["name"] for c in inspector.get_columns("students")]
+    if "status" not in student_cols:
+        op.add_column(
+            "students",
+            sa.Column(
+                "status",
+                sa.String(20),
+                server_default="normal",
+                nullable=False,
+            ),
+        )
 
     # ── session_groups ────────────────────────────────────────────────────────
-    op.create_table(
-        "session_groups",
-        sa.Column(
-            "session_id",
-            postgresql.UUID(as_uuid=True),
-            nullable=False,
-        ),
-        sa.Column("group_name", sa.String(50), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["session_id"],
-            ["sessions.id"],
-            ondelete="CASCADE",
-        ),
-        sa.PrimaryKeyConstraint("session_id", "group_name"),
-    )
+    if "session_groups" not in existing_tables:
+        op.create_table(
+            "session_groups",
+            sa.Column(
+                "session_id",
+                postgresql.UUID(as_uuid=True),
+                nullable=False,
+            ),
+            sa.Column("group_name", sa.String(50), nullable=False),
+            sa.ForeignKeyConstraint(
+                ["session_id"],
+                ["sessions.id"],
+                ondelete="CASCADE",
+            ),
+            sa.PrimaryKeyConstraint("session_id", "group_name"),
+        )
 
     # ── session_students ──────────────────────────────────────────────────────
-    op.create_table(
-        "session_students",
-        sa.Column(
-            "session_id",
-            postgresql.UUID(as_uuid=True),
-            nullable=False,
-        ),
-        sa.Column("student_matricule", sa.String(50), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["session_id"],
-            ["sessions.id"],
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["student_matricule"],
-            ["students.matricule"],
-            ondelete="CASCADE",
-        ),
-        sa.PrimaryKeyConstraint("session_id", "student_matricule"),
-    )
+    if "session_students" not in existing_tables:
+        op.create_table(
+            "session_students",
+            sa.Column(
+                "session_id",
+                postgresql.UUID(as_uuid=True),
+                nullable=False,
+            ),
+            sa.Column("student_matricule", sa.String(50), nullable=False),
+            sa.ForeignKeyConstraint(
+                ["session_id"],
+                ["sessions.id"],
+                ondelete="CASCADE",
+            ),
+            sa.ForeignKeyConstraint(
+                ["student_matricule"],
+                ["students.matricule"],
+                ondelete="CASCADE",
+            ),
+            sa.PrimaryKeyConstraint("session_id", "student_matricule"),
+        )
 
 
 def downgrade() -> None:

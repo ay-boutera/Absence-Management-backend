@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db import Base
-from app.config.enums import AbsenceSourceEnum, CorrectionStatusEnum
+from app.config.enums import AbsenceSourceEnum, CorrectionStatusEnum, JustificationStatusEnum
 
 
 class Absence(Base):
@@ -76,6 +76,7 @@ class Absence(Base):
     session = relationship("Session", back_populates="absences")
     student = relationship("app.models.student.AcademicStudent", back_populates="absences")
     corrections = relationship("AbsenceCorrection", back_populates="absence", cascade="all, delete-orphan")
+    justification = relationship("Justification", back_populates="absence", uselist=False, cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint("session_id", "student_matricule", name="uq_absence_session_student"),

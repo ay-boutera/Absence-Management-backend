@@ -107,3 +107,10 @@ class CorrectionStatusEnum(str, PyEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class JustificationStatusEnum(str, PyEnum):
+    NON_JUSTIFIEE = "non_justifiee"
+    EN_ATTENTE = "en_attente"
+    JUSTIFIEE = "justifiee"
+    REJETEE = "rejetee"

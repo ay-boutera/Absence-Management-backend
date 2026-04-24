@@ -7,6 +7,7 @@ from app.config.enums import (
     ImportExportDataType,
     ImportExportFileType,
     ImportType,
+    JustificationStatusEnum,
     SectionEnum,
     SessionStatusEnum,
     SessionType,
@@ -20,6 +21,7 @@ from .absence import Absence, AbsenceCorrection
 from .audit_log import AuditLog, ActionType
 from .import_export_log import ImportExportLog
 from .import_history import ImportHistory
+from .justification import Justification
 from .module import Module
 from .planning_session import PlanningSession
 from .salle import Salle
@@ -50,6 +52,7 @@ __all__ = [
     "session_students",
     "Absence",
     "AbsenceCorrection",
+    "Justification",
     "ImportHistory",
     "ImportExportLog",
 
@@ -61,6 +64,7 @@ __all__ = [
     "ImportExportDataType",
     "ImportExportFileType",
     "ImportType",
+    "JustificationStatusEnum",
     "SectionEnum",
     "SessionStatusEnum",
     "SessionType",
