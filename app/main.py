@@ -30,6 +30,7 @@ from app.routers import (
     absences,
     auth,
     exports,
+    groups,
     schedule,
     sessions,
 )
@@ -176,6 +177,7 @@ app.include_router(schedule.router,   prefix="/api/v1")  # /planning/my-schedule
 app.include_router(sessions.router,   prefix="/api/v1")  # /sessions/*
 app.include_router(absences.router,   prefix="/api/v1")  # /absences/*
 app.include_router(students_router,   prefix="/api/v1")  # /students/*
+app.include_router(groups.router,     prefix="/api/v1")  # /teachers/my-groups/*
 
 
 # ── Health Checks ──────────────────────────────────────────────────────────────

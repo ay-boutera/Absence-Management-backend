@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal, Optional, List
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_validator
@@ -103,5 +103,38 @@ class TeacherAccountResponse(BaseModel):
     can_export_data: bool
     can_correct_attendance: bool
     correction_window_minutes: int
+    subjects: list[str] = []
+    groups: list[str] = []
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AttendanceGroupStats(BaseModel):
+    niveau: str
+    subject: str
+    group: str
+    attendance_rate: float
+
+
+class SubjectGroupStats(BaseModel):
+    subject_name: str
+    niveau: str
+    groups: List[str]
+
+
+class TeacherProfileResponse(BaseModel):
+    matricule: str
+    nom: str
+    prenom: str
+    email: EmailStr
+    departement: Optional[str] = None
+    role: str = "TEACHER"
+    avatar_url: Optional[str] = None
+    is_active: bool
+
+    total_subjects: int
+    total_groups: int
+    overall_attendance_rate: float
+
+    attendance_by_group: List[AttendanceGroupStats]
+    subjects: List[SubjectGroupStats]

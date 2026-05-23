@@ -162,16 +162,6 @@ async def import_students_csv(
         matricule = row["matricule"]
         email_value = row["email"]
 
-        if matricule in existing_matricules or matricule in profiles_by_id:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="matricule",
-                    reason=f"Étudiant déjà importé — matricule {matricule} existe déjà",
-                )
-            )
-            continue
-
         if email_value in admin_emails or email_value in teacher_emails:
             error_report.append(
                 ImportErrorItem(line=line_number, field="email", reason=f"Email déjà utilisé — email {email_value} existe déjà")
@@ -181,11 +171,17 @@ async def import_students_csv(
         profile = students_by_email.get(email_value)
         if profile is not None and profile.student_id != matricule:
             error_report.append(
-                ImportErrorItem(line=line_number, field="email", reason=f"Email déjà utilisé — email {email_value} existe déjà")
+                ImportErrorItem(line=line_number, field="email", reason=f"Email déjà utilisé par un autre étudiant — email {email_value}")
             )
             continue
 
-        prepared_rows.append({"row": row, "student_profile": profile})
+        prepared_rows.append(
+            {
+                "row": row,
+                "student_profile": profile,
+                "existing_academic": next((a for a in academic_result.scalars().all() if a.matricule == matricule), None)
+            }
+        )
 
     if error_report:
         return JSONResponse(
@@ -202,18 +198,36 @@ async def import_students_csv(
             for item in prepared_rows:
                 row = item["row"]
                 profile = item["student_profile"]
+                existing_academic = item.get("existing_academic")
 
-                db.add(
-                    AcademicStudent(
-                        matricule=row["matricule"],
-                        nom=row["nom"],
-                        prenom=row["prenom"],
-                        filiere=row["filiere"],
-                        niveau=row["niveau"],
-                        groupe=row["groupe"],
-                        email=row["email"],
+                # Combine niveau (1) and filiere (CS) -> 1CS
+                raw_niv = row.get("niveau", "").strip()
+                raw_fil = row.get("filiere", "").strip()
+                if raw_fil and raw_fil.upper() not in raw_niv.upper():
+                    target_level = f"{raw_niv}{raw_fil}".upper()
+                else:
+                    target_level = raw_niv.upper()
+
+                if existing_academic:
+                    existing_academic.nom = row["nom"]
+                    existing_academic.prenom = row["prenom"]
+                    existing_academic.filiere = row["filiere"]
+                    existing_academic.niveau = target_level
+                    existing_academic.groupe = row["groupe"]
+                    existing_academic.email = row["email"]
+                    db.add(existing_academic)
+                else:
+                    db.add(
+                        AcademicStudent(
+                            matricule=row["matricule"],
+                            nom=row["nom"],
+                            prenom=row["prenom"],
+                            filiere=row["filiere"],
+                            niveau=target_level,
+                            groupe=row["groupe"],
+                            email=row["email"],
+                        )
                     )
-                )
 
                 if profile is None:
                     db.add(
@@ -226,7 +240,7 @@ async def import_students_csv(
                             is_active=True,
                             student_id=row["matricule"],
                             program=row["filiere"],
-                            level=row["niveau"],
+                            level=target_level,
                             group=row["groupe"],
                         )
                     )
@@ -236,7 +250,7 @@ async def import_students_csv(
                     profile.last_name = row["nom"]
                     profile.student_id = row["matricule"]
                     profile.program = row["filiere"]
-                    profile.level = row["niveau"]
+                    profile.level = target_level
                     profile.group = row["groupe"]
                     db.add(profile)
 

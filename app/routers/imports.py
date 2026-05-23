@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 from typing import Sequence
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -26,6 +27,7 @@ from app.models.student import AcademicStudent
 from app.schemas.import_export import ImportErrorItem, ImportResponse
 
 router = APIRouter(tags=["Imports"])
+logger = logging.getLogger(__name__)
 email_adapter = TypeAdapter(EmailStr)
 
 
@@ -72,6 +74,11 @@ def _validate_columns(actual_columns: Sequence[str], expected_columns: list[str]
 def _parse_csv(content: str, expected_columns: list[str]) -> csv.DictReader:
     csv_stream = io.StringIO(content)
     reader = csv.DictReader(csv_stream, delimiter=",")
+    
+    # Strip whitespace from fieldnames for robustness
+    if reader.fieldnames:
+        reader.fieldnames = [f.strip() for f in reader.fieldnames]
+        
     _validate_columns(reader.fieldnames or [], expected_columns)
     return reader
 
@@ -172,77 +179,48 @@ async def import_students_csv(
     matricules = [row["matricule"] for _, row in parsed_rows if row["matricule"]]
     emails = [row["email"] for _, row in parsed_rows if row["email"]]
 
-    academic_students_result = await db.execute(
-        select(AcademicStudent).where(AcademicStudent.matricule.in_(matricules))
-    )
-    existing_academic_matricules = {
-        student.matricule for student in academic_students_result.scalars().all()
-    }
+    # 1. Fetch academic students
+    as_res = await db.execute(select(AcademicStudent).where(AcademicStudent.matricule.in_(matricules)))
+    existing_academic_by_matricule = {s.matricule: s for s in as_res.scalars().all()}
 
-    profiles_result = await db.execute(
-        select(StudentProfile).where(StudentProfile.student_id.in_(matricules))
-    )
-    profiles_by_student_id = {
-        profile.student_id: profile for profile in profiles_result.scalars().all()
-    }
+    # 2. Fetch profiles by student_id (matricule)
+    p_res_id = await db.execute(select(StudentProfile).where(StudentProfile.student_id.in_(matricules)))
+    profiles_by_student_id = {p.student_id: p for p in p_res_id.scalars().all()}
 
-    students_result = await db.execute(
-        select(StudentProfile).where(func.lower(StudentProfile.email).in_(emails))
-    )
-    students_by_email = {
-        student.email.lower(): student for student in students_result.scalars().all()
-    }
+    # 3. Fetch profiles by email
+    p_res_em = await db.execute(select(StudentProfile).where(func.lower(StudentProfile.email).in_(emails)))
+    students_by_email = {p.email.lower(): p for p in p_res_em.scalars().all()}
 
-    admin_result = await db.execute(
-        select(func.lower(Admin.email)).where(func.lower(Admin.email).in_(emails))
-    )
-    admin_emails = {value for value in admin_result.scalars().all() if value}
-
-    teacher_result = await db.execute(
-        select(func.lower(Teacher.email)).where(func.lower(Teacher.email).in_(emails))
-    )
-    teacher_emails = {value for value in teacher_result.scalars().all() if value}
+    # 4. Check for email conflicts with Admins/Teachers
+    adm_res = await db.execute(select(func.lower(Admin.email)).where(func.lower(Admin.email).in_(emails)))
+    admin_emails = {v for v in adm_res.scalars().all() if v}
+    
+    t_res = await db.execute(select(func.lower(Teacher.email)).where(func.lower(Teacher.email).in_(emails)))
+    teacher_emails = {v for v in t_res.scalars().all() if v}
 
     prepared_rows: list[dict[str, object]] = []
     for line_number, row in parsed_rows:
         matricule = row["matricule"]
         email_value = row["email"]
 
-        if matricule in existing_academic_matricules or matricule in profiles_by_student_id:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="matricule",
-                    reason=f"Étudiant déjà importé — matricule {matricule} existe déjà",
-                )
-            )
-            continue
-
         if email_value in admin_emails or email_value in teacher_emails:
             error_report.append(
                 ImportErrorItem(
                     line=line_number,
                     field="email",
-                    reason=f"Email déjà utilisé — email {email_value} existe déjà",
+                    reason=f"Email déjà utilisé par un Admin/Enseignant — {email_value}",
                 )
             )
             continue
 
-        selected_profile = students_by_email.get(email_value)
-        if selected_profile is not None and selected_profile.student_id != matricule:
-            error_report.append(
-                ImportErrorItem(
-                    line=line_number,
-                    field="email",
-                    reason=f"Email déjà utilisé — email {email_value} existe déjà",
-                )
-            )
-            continue
+        existing_academic = existing_academic_by_matricule.get(matricule)
+        existing_profile = students_by_email.get(email_value) or profiles_by_student_id.get(matricule)
 
         prepared_rows.append(
             {
                 "row": row,
-                "student_profile": selected_profile,
+                "student_profile": existing_profile,
+                "existing_academic": existing_academic,
             }
         )
 
@@ -268,19 +246,43 @@ async def import_students_csv(
             for item in prepared_rows:
                 row = item["row"]
                 student_profile = item["student_profile"]
+                existing_academic = item["existing_academic"]
 
-                academic_student = AcademicStudent(
-                    matricule=row["matricule"],
-                    nom=row["nom"],
-                    prenom=row["prenom"],
-                    filiere=row["filiere"],
-                    niveau=row["niveau"],
-                    groupe=row["groupe"],
-                    email=row["email"],
-                )
-                db.add(academic_student)
+                # Logic to combine niveau (e.g. 1) and filiere (e.g. CS) -> 1CS
+                raw_niv = row.get("niveau", "").strip()
+                raw_fil = row.get("filiere", "").strip()
+                
+                if raw_fil and raw_fil.upper() not in raw_niv.upper():
+                    target_level = f"{raw_niv}{raw_fil}".upper()
+                else:
+                    target_level = raw_niv.upper()
+
+                logger.info(f"Student {row.get('matricule')}: mapping '{raw_niv}' + '{raw_fil}' -> '{target_level}'")
+
+                if existing_academic:
+                    # UPDATE EXISTING
+                    existing_academic.nom = row["nom"]
+                    existing_academic.prenom = row["prenom"]
+                    existing_academic.filiere = row["filiere"]
+                    existing_academic.niveau = target_level
+                    existing_academic.groupe = row["groupe"]
+                    existing_academic.email = row["email"]
+                    db.add(existing_academic)
+                else:
+                    # CREATE NEW
+                    academic_student = AcademicStudent(
+                        matricule=row["matricule"],
+                        nom=row["nom"],
+                        prenom=row["prenom"],
+                        filiere=row["filiere"],
+                        niveau=target_level,
+                        groupe=row["groupe"],
+                        email=row["email"],
+                    )
+                    db.add(academic_student)
 
                 if student_profile is None:
+                    # CREATE NEW PROFILE
                     student_profile = StudentProfile(
                         email=row["email"],
                         first_name=row["prenom"],
@@ -290,17 +292,18 @@ async def import_students_csv(
                         is_active=True,
                         student_id=row["matricule"],
                         program=row["filiere"],
-                        level=row["niveau"],
+                        level=target_level,
                         group=row["groupe"],
                     )
                     db.add(student_profile)
                 else:
+                    # UPDATE EXISTING PROFILE
                     student_profile.email = row["email"]
                     student_profile.first_name = row["prenom"]
                     student_profile.last_name = row["nom"]
                     student_profile.student_id = row["matricule"]
                     student_profile.program = row["filiere"]
-                    student_profile.level = row["niveau"]
+                    student_profile.level = target_level
                     student_profile.group = row["groupe"]
                     db.add(student_profile)
 
