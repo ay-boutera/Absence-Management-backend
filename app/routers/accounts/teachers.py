@@ -201,11 +201,11 @@ async def get_teacher_profile(
     distinct_groups = {g for (_, _, g) in group_stats.keys()}
 
     return TeacherProfileResponse(
-        matricule=teacher.employee_id or matricule,
-        nom=teacher.last_name,
-        prenom=teacher.first_name,
+        employee_id=teacher.employee_id or matricule,
+        last_name=teacher.last_name,
+        first_name=teacher.first_name,
         email=teacher.email,
-        departement=teacher.specialization,
+        specialization=teacher.specialization,
         role="TEACHER",
         avatar_url=teacher.avatar_url,
         is_active=teacher.is_active,

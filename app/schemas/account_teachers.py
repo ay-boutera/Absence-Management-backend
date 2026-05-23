@@ -123,11 +123,11 @@ class SubjectGroupStats(BaseModel):
 
 
 class TeacherProfileResponse(BaseModel):
-    matricule: str
-    nom: str
-    prenom: str
+    employee_id: str
+    last_name: str
+    first_name: str
     email: EmailStr
-    departement: Optional[str] = None
+    specialization: Optional[str] = None
     role: str = "TEACHER"
     avatar_url: Optional[str] = None
     is_active: bool
