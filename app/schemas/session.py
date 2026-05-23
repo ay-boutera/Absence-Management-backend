@@ -137,7 +137,7 @@ class MySessionOut(BaseModel):
     end_time: time
     type: str
     status: str
-    lesson_name: strup
+    lesson_name: Optional[str] = None
     room: Optional[str] = None
     groups: list[str] = Field(default_factory=list)
     has_attendance: bool

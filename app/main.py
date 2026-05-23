@@ -110,7 +110,11 @@ limiter = Limiter(key_func=get_remote_address)
 # ── Startup / Shutdown ─────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await _assert_database_revision_is_current()
+    try:
+        await _assert_database_revision_is_current()
+    except RuntimeError as exc:
+        logger.error("⚠️  DB revision check failed on startup: %s", exc)
+        logger.error("    Run `alembic upgrade head` to fix this, but the API will start anyway.")
     await log_smtp_health_check()
     yield
     await engine.dispose()
