@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import date as date_type, time as time_type
 from typing import Optional
+import uuid
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -23,7 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config.enums import UserRole
 from app.db import get_db
-from app.helpers.permissions import require_role
+from app.helpers.permissions import require_role, require_active_user
 from app.models import (
     Absence,
     Module,
@@ -509,4 +510,142 @@ async def get_student_absence_history(
         sessions_not_recorded=sessions_not_recorded,
         attendance_rate=round(rate, 1),
         timeline=timeline,
+    )
+
+
+# ── GET /groups ─────────────────────────────────────────────────────────────
+
+class GroupGlobalItem(BaseModel):
+    group_id: str
+    year: str | None = None
+    section: str | None = None
+    group_name: str
+    speciality: str | None = None
+    student_count: int
+    absence_rate: float
+
+class GroupGlobalResponse(BaseModel):
+    total: int
+    items: list[GroupGlobalItem]
+
+@router.get(
+    "/groups",
+    response_model=GroupGlobalResponse,
+    summary="Get all groups optionally filtered by criteria",
+    description="""
+Returns all groups mapped globally, not just for a single teacher.
+Filter by year, section, speciality.
+
+**Auth:** Active User (JWT).
+""",
+)
+async def get_all_groups(
+    year: Optional[str] = Query(None, description="Filter by year (e.g. 1CP)"),
+    section: Optional[str] = Query(None, description="Filter by section (e.g. A)"),
+    speciality: Optional[str] = Query(None, description="Filter by speciality"),
+    current_user=Depends(require_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # 1. Get unique groups
+    planning_q = select(
+        PlanningSession.year,
+        PlanningSession.section,
+        PlanningSession.speciality,
+        PlanningSession.group
+    ).where(PlanningSession.group.isnot(None))
+
+    if year:
+        planning_q = planning_q.where(PlanningSession.year == year)
+    if section:
+        planning_q = planning_q.where(PlanningSession.section == section)
+    if speciality:
+        planning_q = planning_q.where(PlanningSession.speciality == speciality)
+
+    planning_q = planning_q.distinct()
+    planning_rows = await db.execute(planning_q)
+
+    # 2. Extract into a list of tuples
+    unique_groups = []
+    for row in planning_rows.all():
+        row_year = row.year.value if hasattr(row.year, "value") else str(row.year) if row.year else None
+        row_section = row.section.value if hasattr(row.section, "value") else str(row.section) if row.section else None
+        row_spec = row.speciality.value if hasattr(row.speciality, "value") else str(row.speciality) if row.speciality else None
+        
+        unique_groups.append({
+            "year": row_year,
+            "section": row_section,
+            "speciality": row_spec,
+            "group_name": row.group
+        })
+
+    # Optional: If section was not provided and we want groups from AcademicStudent that might not have sessions yet
+    if not section and not unique_groups:
+        student_q = select(
+            AcademicStudent.niveau,
+            AcademicStudent.filiere,
+            AcademicStudent.groupe
+        ).where(AcademicStudent.groupe.isnot(None))
+        if year:
+            student_q = student_q.where(AcademicStudent.niveau == year)
+        if speciality:
+            student_q = student_q.where(AcademicStudent.filiere == speciality)
+        student_q = student_q.distinct()
+        student_rows = await db.execute(student_q)
+        for row in student_rows.all():
+            unique_groups.append({
+                "year": row.niveau,
+                "section": None,
+                "speciality": row.filiere,
+                "group_name": row.groupe
+            })
+
+    # Sort to be nice
+    unique_groups.sort(key=lambda x: (x["year"] or "", x["section"] or "", x["group_name"] or ""))
+
+    items = []
+    for info in unique_groups:
+        student_filters = [AcademicStudent.groupe == info["group_name"]]
+        if info["year"]:
+            student_filters.append(AcademicStudent.niveau == info["year"])
+        if info["speciality"]:
+            student_filters.append(AcademicStudent.filiere == info["speciality"])
+            
+        student_count = (await db.execute(select(func.count()).select_from(AcademicStudent).where(and_(*student_filters)))).scalar() or 0
+        
+        session_filters = [Session.group == info["group_name"]]
+        if info["year"]:
+            session_filters.append(Session.year == info["year"])
+        if info["section"]:
+            session_filters.append(Session.section == info["section"])
+            
+        sessions_ids = (await db.execute(select(Session.id).where(and_(*session_filters)))).scalars().all()
+        
+        absence_rate = 0.0
+        if sessions_ids and student_count > 0:
+            total_absences = (await db.execute(
+                select(func.count()).select_from(Absence)
+                .where(and_(Absence.session_id.in_(sessions_ids), Absence.is_absent == True))
+            )).scalar() or 0
+            
+            rate = (total_absences / (student_count * len(sessions_ids))) * 100.0
+            absence_rate = round(rate, 2)
+
+        group_id_str = f"group-{info['year']}-{info['section']}-{info['group_name']}"
+        group_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, group_id_str))
+
+        items.append(
+            GroupGlobalItem(
+                group_id=group_uuid,
+                year=info["year"],
+                section=info["section"],
+                group_name=info["group_name"],
+                speciality=info["speciality"],
+                student_count=student_count,
+                absence_rate=absence_rate
+            )
+        )
+
+    return GroupGlobalResponse(
+        total=len(items),
+        items=items
     )
