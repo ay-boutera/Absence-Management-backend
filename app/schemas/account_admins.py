@@ -113,3 +113,19 @@ class UserStatusUpdate(BaseModel):
     is_active: bool
 
     model_config = ConfigDict(json_schema_extra={"example": {"is_active": False}})
+
+
+class AdminProfileResponse(BaseModel):
+    matricule: str
+    nom: str
+    prenom: str
+    email: str
+    departement: str | None = None
+    role: Literal["ADMIN"] = "ADMIN"
+    avatar_url: str | None = None
+    is_active: bool
+    total_subjects: int = 0
+    total_groups: int = 0
+    overall_attendance_rate: float = 0.0
+    attendance_by_group: list = []
+    subjects: list = []
