@@ -33,25 +33,17 @@ class AcademicStudentStatusOut(BaseModel):
 
 class StudentAttendanceListOut(BaseModel):
     """One row in the admin attendance list."""
-    id: UUID
-    matricule: str
-    nom: str
-    prenom: str
+    student_id: str
+    full_name: str
     email: str
-    filiere: str
-    niveau: str
-    groupe: str
+    avatar_url: Optional[str] = None
+    level: str
+    group: str
+    total_absences: int
     status: str
-    absences_count: int
+    is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class PaginatedStudentAttendanceList(BaseModel):
-    total: int
-    page: int
-    page_size: int
-    items: List[StudentAttendanceListOut]
 
 
 # ── Student Profile — GET /students/{matricule} ─────────────────────────────

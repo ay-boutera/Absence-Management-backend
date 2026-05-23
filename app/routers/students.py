@@ -25,7 +25,6 @@ from app.models.student import AcademicStudent, Student
 from app.schemas.students import (
     AbsenceHistoryItem,
     AcademicStudentStatusOut,
-    PaginatedStudentAttendanceList,
     StudentAttendanceListOut,
     StudentProfileOut,
     StudentStatusUpdate,
@@ -37,34 +36,30 @@ router = APIRouter(tags=["Students"])
 # ── GET /students ──────────────────────────────────────────────────────────────
 @router.get(
     "/students",
-    response_model=PaginatedStudentAttendanceList,
+    response_model=list[StudentAttendanceListOut],
     summary="List all students with absence counts (Admin attendance list)",
     description="""
-Returns a paginated list of **all** academic students together with each
-student's total number of absences (`absences_count`).
+Returns a list of **all** academic students together with each
+student's total number of absences (`total_absences`).
 
 **Query parameters (all optional):**
-- `q` — search by name, matricule, or email (case-insensitive partial match)
-- `niveau` — filter by year / level (e.g. "CP1", "CS1")
-- `groupe` — filter by group (e.g. "A1", "B2")
+- `search` — search by name, matricule, or email
+- `year` — filter by year / level (e.g. "CP1", "CS1")
+- `group` — filter by group (e.g. "A1", "B2")
 - `status` — filter by student status ("normal", "exclu", "bloque", "abandonné")
-- `sort_by` — field to sort on: `nom`, `matricule`, `absences_count` (default: `nom`)
+- `sort_by` — field to sort on: `nom`, `matricule`, `total_absences` (default: `nom`)
 - `sort_order` — `asc` or `desc` (default: `asc`)
-- `page` — page number (default: 1)
-- `page_size` — items per page (default: 20, max: 100)
 
 **Auth:** Admin only.
 """,
 )
 async def list_students_with_absences(
-    q: Optional[str] = Query(default=None, description="Search by name, matricule, or email"),
-    niveau: Optional[str] = Query(default=None, description="Filter by year/level"),
-    groupe: Optional[str] = Query(default=None, description="Filter by group"),
-    student_status: Optional[str] = Query(default=None, alias="status", description="Filter by student status"),
-    sort_by: Optional[str] = Query(default="nom", description="Sort field: nom, matricule, absences_count"),
+    search: Optional[str] = Query(default=None, description="Search by name, matricule, or email"),
+    year: Optional[str] = Query(default=None, description="Filter by year/level"),
+    group: Optional[str] = Query(default=None, description="Filter by group"),
+    status_query: Optional[str] = Query(default=None, alias="status", description="Filter by student status"),
+    sort_by: Optional[str] = Query(default="nom", description="Sort field: nom, matricule, total_absences"),
     sort_order: Optional[str] = Query(default="asc", description="Sort order: asc or desc"),
-    page: int = Query(default=1, ge=1, description="Page number"),
-    page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
     current_user=Depends(require_role(UserRole.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -72,29 +67,35 @@ async def list_students_with_absences(
     absence_count_sq = (
         select(
             Absence.student_matricule,
-            func.count(Absence.id).label("absences_count"),
+            func.count(Absence.id).label("total_absences"),
         )
         .where(Absence.is_absent.is_(True))
         .group_by(Absence.student_matricule)
         .subquery()
     )
 
-    # Main query: join students with absence counts
+    # Main query: join students with absence counts and auth user info
     base_q = (
         select(
             AcademicStudent,
-            func.coalesce(absence_count_sq.c.absences_count, 0).label("absences_count"),
+            func.coalesce(absence_count_sq.c.total_absences, 0).label("total_absences"),
+            Student.avatar_url,
+            Student.is_active,
         )
         .outerjoin(
             absence_count_sq,
             AcademicStudent.matricule == absence_count_sq.c.student_matricule,
         )
+        .outerjoin(
+            Student,
+            AcademicStudent.email == Student.email,
+        )
     )
 
     # ── Filters ────────────────────────────────────────────────────────────────
     filters = []
-    if q:
-        like = f"%{q}%"
+    if search:
+        like = f"%{search}%"
         filters.append(
             or_(
                 AcademicStudent.nom.ilike(like),
@@ -103,25 +104,21 @@ async def list_students_with_absences(
                 AcademicStudent.email.ilike(like),
             )
         )
-    if niveau:
-        filters.append(AcademicStudent.niveau == niveau)
-    if groupe:
-        filters.append(AcademicStudent.groupe == groupe)
-    if student_status:
-        filters.append(AcademicStudent.status == student_status)
+    if year:
+        filters.append(AcademicStudent.niveau == year)
+    if group:
+        filters.append(AcademicStudent.groupe == group)
+    if status_query:
+        filters.append(AcademicStudent.status == status_query)
 
     if filters:
         base_q = base_q.where(and_(*filters))
-
-    # ── Total count ────────────────────────────────────────────────────────────
-    count_q = select(func.count()).select_from(base_q.subquery())
-    total = (await db.execute(count_q)).scalar_one()
 
     # ── Sorting ────────────────────────────────────────────────────────────────
     sort_columns = {
         "nom": AcademicStudent.nom,
         "matricule": AcademicStudent.matricule,
-        "absences_count": func.coalesce(absence_count_sq.c.absences_count, 0),
+        "total_absences": func.coalesce(absence_count_sq.c.total_absences, 0),
     }
     sort_col = sort_columns.get(sort_by, AcademicStudent.nom)
     if sort_order == "desc":
@@ -131,34 +128,24 @@ async def list_students_with_absences(
 
     base_q = base_q.order_by(sort_col, AcademicStudent.prenom)
 
-    # ── Pagination ─────────────────────────────────────────────────────────────
-    base_q = base_q.offset((page - 1) * page_size).limit(page_size)
-
     rows = (await db.execute(base_q)).all()
 
     items = [
         StudentAttendanceListOut(
-            id=student.id,
-            matricule=student.matricule,
-            nom=student.nom,
-            prenom=student.prenom,
+            student_id=student.matricule,
+            full_name=f"{student.nom} {student.prenom}",
             email=student.email,
-            filiere=student.filiere,
-            niveau=student.niveau,
-            groupe=student.groupe,
+            avatar_url=avatar_url,
+            level=student.niveau,
+            group=student.groupe,
+            total_absences=total_absences,
             status=student.status,
-            absences_count=absences_count,
+            is_active=bool(is_active),
         )
-        for student, absences_count in rows
+        for student, total_absences, avatar_url, is_active in rows
     ]
 
-    return PaginatedStudentAttendanceList(
-        total=total,
-        page=page,
-        page_size=page_size,
-        items=items,
-    )
-
+    return items
 
 # ── GET /students/{matricule} ──────────────────────────────────────────────────
 @router.get(
