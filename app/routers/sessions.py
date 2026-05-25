@@ -196,7 +196,7 @@ async def get_today_sessions(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profil enseignant introuvable.")
 
     # MOCK DATE: Hardcoded to a Thursday (Jeudi) for testins
-    today = datetime(2026, 5, 28, tzinfo=timezone.utc).date()
+    today = datetime(2026, 5, 24, tzinfo=timezone.utc).date()
 
     async with db.begin_nested():
         sessions = await _materialise_sessions_for_teacher(db, teacher, today)
