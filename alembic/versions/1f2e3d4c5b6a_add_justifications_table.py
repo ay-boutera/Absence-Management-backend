@@ -24,6 +24,7 @@ justification_scope_enum = sa.Enum(
     "session",
     "range",
     name="justificationscopetype",
+    create_type=False,
 )
 
 justification_status_enum = sa.Enum(
@@ -31,6 +32,7 @@ justification_status_enum = sa.Enum(
     "approved",
     "rejected",
     name="justificationstatus",
+    create_type=False,
 )
 
 
