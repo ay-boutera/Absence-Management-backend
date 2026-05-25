@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     MAIL_STARTTLS: bool = True
     MAIL_SSL_TLS: bool = False
 
+    # ── Cloudinary ────────────────────────────────────────────────────────────
+    CLOUDINARY_CLOUD_NAME: str
+    CLOUDINARY_API_KEY: str
+    CLOUDINARY_API_SECRET: str
+
     # ── App ───────────────────────────────────────────────────────────────────
     APP_NAME: str = "AMS - Absence Management System"
     FRONTEND_URL: str = "https://ams-frontend-fddx.onrender.com"

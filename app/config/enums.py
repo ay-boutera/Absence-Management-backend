@@ -107,3 +107,15 @@ class CorrectionStatusEnum(str, PyEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class JustificationScopeType(str, PyEnum):
+    ABSENCE = "absence"
+    SESSION = "session"
+    RANGE = "range"
+
+
+class JustificationStatus(str, PyEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"

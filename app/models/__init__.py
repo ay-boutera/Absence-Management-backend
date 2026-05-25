@@ -21,6 +21,7 @@ from .audit_log import AuditLog, ActionType
 from .import_export_log import ImportExportLog
 from .import_history import ImportHistory
 from .module import Module
+from .justification import Justification
 from .planning_session import PlanningSession
 from .salle import Salle
 from .session import Session, SessionAttendanceSummary, session_groups, session_students
@@ -42,6 +43,7 @@ __all__ = [
     "ActionType",
     "AcademicStudent",
     "Module",
+    "Justification",
     "Salle",
     "PlanningSession",
     "Session",

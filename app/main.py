@@ -31,6 +31,7 @@ from app.routers import (
     auth,
     exports,
     groups,
+    justifications,
     schedule,
     sessions,
 )
@@ -38,6 +39,7 @@ from app.routers.accounts import router as accounts_router
 from app.routers.imports import router as imports_router
 from app.routers.students import router as students_router
 from app.services.email_service import log_smtp_health_check
+from app.services.cloudinary_service import configure_cloudinary
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +119,7 @@ async def lifespan(app: FastAPI):
         logger.error("⚠️  DB revision check failed on startup: %s", exc)
         logger.error("    Run `alembic upgrade head` to fix this, but the API will start anyway.")
     await log_smtp_health_check()
+    configure_cloudinary()
     yield
     await engine.dispose()
     print("✅ Database connection pool closed")
@@ -178,6 +181,7 @@ app.include_router(sessions.router,   prefix="/api/v1")  # /sessions/*
 app.include_router(absences.router,   prefix="/api/v1")  # /absences/*
 app.include_router(students_router,   prefix="/api/v1")  # /students/*
 app.include_router(groups.router,     prefix="/api/v1")  # /teachers/my-groups/*
+app.include_router(justifications.router, prefix="/api/v1")  # /justifications/*
 
 
 # ── Health Checks ──────────────────────────────────────────────────────────────
