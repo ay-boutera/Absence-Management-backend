@@ -40,3 +40,6 @@ httpx==0.28.1           # async HTTP client used by authlib
 
 # File storage
 cloudinary==1.41.0
+
+# PDF export
+reportlab==4.2.5

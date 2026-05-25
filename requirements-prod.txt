@@ -32,3 +32,6 @@ slowapi==0.1.9
 
 # File storage
 cloudinary==1.41.0
+
+# PDF export
+reportlab==4.2.5
