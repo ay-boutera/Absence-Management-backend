@@ -130,7 +130,23 @@ async def test_get_student_profile_includes_module_attendance_and_history(client
             status=SessionStatusEnum.SCHEDULED,
             is_makeup=False,
         )
-        session.add_all([own_group_session, cross_group_session])
+        semester_module_other_group_session = Session(
+            module_id=module_acsi.id,
+            teacher_id=teacher.id,
+            room_id=None,
+            group="G9",
+            year="1CS",
+            section="A",
+            speciality="ISI",
+            semester="S1",
+            date=date(2026, 5, 22),
+            start_time=time(10, 0),
+            end_time=time(12, 0),
+            type=SessionType.COURS,
+            status=SessionStatusEnum.SCHEDULED,
+            is_makeup=False,
+        )
+        session.add_all([own_group_session, cross_group_session, semester_module_other_group_session])
         await session.flush()
 
         session.add_all(

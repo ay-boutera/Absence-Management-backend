@@ -9,7 +9,8 @@ PATCH /api/v1/students/{student_id}/status   Admin: update a student's academic 
 
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime
+from typing import Optional, cast, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -116,12 +117,13 @@ async def list_students_with_absences(
         base_q = base_q.where(and_(*filters))
 
     # ── Sorting ────────────────────────────────────────────────────────────────
-    sort_columns = {
+    sort_columns: dict[str, Any] = {
         "nom": AcademicStudent.nom,
         "matricule": AcademicStudent.matricule,
         "total_absences": func.coalesce(absence_count_sq.c.total_absences, 0),
     }
-    sort_col = sort_columns.get(sort_by, AcademicStudent.nom)
+    sort_key = sort_by if sort_by in sort_columns else "nom"
+    sort_col = sort_columns[sort_key]
     if sort_order == "desc":
         sort_col = sort_col.desc()
     else:
@@ -335,8 +337,35 @@ async def get_student_profile(
     else:
         attendance_rate = 100.0
 
-    # ── 7. Compute per-module attendance (own group sessions only) ────────────
-    module_rows = (await db.execute(select(Module).order_by(Module.nom.asc()))).scalars().all()
+    # ── 7. Compute per-module attendance ──────────────────────────────────────
+    # Module scope:
+    # - include all modules taught in the student's level/year for the same semester(s)
+    # - semester(s) are inferred from the student's own group sessions
+    # - if no own-group sessions exist yet, fall back to all semesters in the level
+    own_group_semesters_rows = (
+        await db.execute(
+            select(Session.semester)
+            .where(
+                and_(
+                    Session.group == academic.groupe,
+                    Session.year == academic.niveau,
+                    Session.semester.is_not(None),
+                )
+            )
+            .distinct()
+        )
+    ).all()
+    own_group_semesters = [row[0] for row in own_group_semesters_rows if row[0]]
+
+    module_scope_q = (
+        select(Module)
+        .join(Session, Session.module_id == Module.id)
+        .where(Session.year == academic.niveau)
+    )
+    if own_group_semesters:
+        module_scope_q = module_scope_q.where(Session.semester.in_(own_group_semesters))
+
+    module_rows = (await db.execute(module_scope_q.distinct().order_by(Module.nom.asc()))).scalars().all()
     sessions_per_module_rows = (
         await db.execute(
             select(Session.module_id, func.count(Session.id))
@@ -377,7 +406,7 @@ async def get_student_profile(
 
         module_attendance.append(
             ModuleAttendanceItem(
-                module_name=module.nom,
+                module_name=cast(str, module.nom),
                 total_sessions=module_total_sessions,
                 absences=module_absences,
                 attendance_rate=module_rate,
@@ -385,21 +414,21 @@ async def get_student_profile(
         )
 
     return StudentProfileOut(
-        id=academic.id,
-        matricule=academic.matricule,
-        nom=academic.nom,
-        prenom=academic.prenom,
-        email=academic.email,
-        filiere=academic.filiere,
-        niveau=academic.niveau,
-        groupe=academic.groupe,
-        status=academic.status,
+        id=cast(UUID, academic.id),
+        matricule=cast(str, academic.matricule),
+        nom=cast(str, academic.nom),
+        prenom=cast(str, academic.prenom),
+        email=cast(str, academic.email),
+        filiere=cast(str, academic.filiere),
+        niveau=cast(str, academic.niveau),
+        groupe=cast(str, academic.groupe),
+        status=cast(str, academic.status),
         # From auth account (if linked)
-        avatar_url=auth_account.avatar_url if auth_account else None,
-        phone=auth_account.phone if auth_account else None,
-        is_active=auth_account.is_active if auth_account else None,
-        created_at=auth_account.created_at if auth_account else academic.created_at,
-        last_activity=auth_account.last_activity if auth_account else None,
+        avatar_url=cast(Optional[str], auth_account.avatar_url) if auth_account else None,
+        phone=cast(Optional[str], auth_account.phone) if auth_account else None,
+        is_active=cast(Optional[bool], auth_account.is_active) if auth_account else None,
+        created_at=cast(Optional[datetime], auth_account.created_at) if auth_account else cast(Optional[datetime], academic.created_at),
+        last_activity=cast(Optional[datetime], auth_account.last_activity) if auth_account else None,
         # Attendance (own group only)
         total_absences=total_absences,
         total_sessions=total_sessions,
@@ -444,7 +473,7 @@ async def update_student_status(
             detail=f"Student with id '{student_id}' not found.",
         )
 
-    student.status = data.status
+    student.status = data.status  # type: ignore[assignment]  # pyright: ignore[reportAttributeAccessIssue]
     db.add(student)
     await db.flush()
     await db.refresh(student)

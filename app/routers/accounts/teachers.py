@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, HTTPException, status
@@ -10,6 +10,7 @@ from app.models.session import Session, SessionAttendanceSummary
 from app.models.module import Module
 
 from app.models.planning_session import PlanningSession, planning_session_teachers
+
 
 from app.config import UserRole
 from app.db import get_db
@@ -111,6 +112,90 @@ async def update_teacher_account(
     "/teachers/{matricule}",
     response_model=TeacherProfileResponse,
     summary="Get Teacher Profile and Attendance Stats",
+    description="""
+Returns a complete teacher profile identified by **employee_id** (matricule).
+
+Includes:
+- Personal/account info: name, email, phone, specialization, avatar, active status
+- Global KPIs: `total_subjects`, `total_groups`, `total_sessions`, `total_absences`, `overall_attendance_rate`
+- Group attendance details: `attendance_by_group[]` with:
+  - `niveau`, `subject`, `group`
+  - `total_sessions` handled by this teacher for that group
+  - `total_absences` accumulated from attendance summaries
+  - `attendance_rate` = `((total_students - total_absences) / total_students) * 100`
+- Subject coverage: `subjects[]` with grouped list of groups per subject/niveau
+
+Input:
+- Path parameter `matricule` (teacher employee_id), example: `ENS002`
+
+Auth: Admin only.
+""",
+    responses={
+        200: {
+            "description": "Teacher profile fetched successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "employee_id": "ENS002",
+                        "last_name": "NOUR ELFOUAD",
+                        "first_name": "TRARI",
+                        "email": "nf.trari@esi-sba.dz",
+                        "specialization": "math",
+                        "role": "TEACHER",
+                        "avatar_url": None,
+                        "phone": None,
+                        "is_active": True,
+                        "total_subjects": 1,
+                        "total_groups": 3,
+                        "total_sessions": 21,
+                        "total_absences": 3,
+                        "overall_attendance_rate": 85.7,
+                        "attendance_by_group": [
+                            {
+                                "niveau": "1CS",
+                                "subject": "Archi",
+                                "group": "G6",
+                                "total_sessions": 7,
+                                "total_absences": 1,
+                                "attendance_rate": 85.7,
+                            },
+                            {
+                                "niveau": "1CS",
+                                "subject": "Archi",
+                                "group": "G2",
+                                "total_sessions": 7,
+                                "total_absences": 1,
+                                "attendance_rate": 85.7,
+                            },
+                            {
+                                "niveau": "1CS",
+                                "subject": "Archi",
+                                "group": "G3",
+                                "total_sessions": 7,
+                                "total_absences": 1,
+                                "attendance_rate": 85.7,
+                            },
+                        ],
+                        "subjects": [
+                            {
+                                "subject_name": "Archi",
+                                "niveau": "1CS",
+                                "groups": ["G2", "G3", "G6"],
+                            }
+                        ],
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Teacher not found",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Teacher with matricule 'ENS002' not found."}
+                }
+            },
+        },
+    },
 )
 async def get_teacher_profile(
     matricule: str,
@@ -161,7 +246,12 @@ async def get_teacher_profile(
                 # Ensure it appears in attendance_by_group even with 0 sessions
                 key = (niveau_str, subj, grp)
                 if key not in group_stats:
-                    group_stats[key] = {"present": 0, "total": 0}
+                    group_stats[key] = {
+                        "present": 0,
+                        "total_students": 0,
+                        "total_absences": 0,
+                        "total_sessions": 0,
+                    }
 
     # 2. Fetch actual sessions for this teacher with Module and AttendanceSummary
     stmt = (
@@ -185,31 +275,55 @@ async def get_teacher_profile(
             subject_map[sub_key].add(session.group)
         
         # Only consider sessions that have an attendance summary
+        key = (niveau_str, subject_name, session.group)
+        if key not in group_stats:
+            group_stats[key] = {
+                "present": 0,
+                "total_students": 0,
+                "total_absences": 0,
+                "total_sessions": 0,
+            }
+        group_stats[key]["total_sessions"] += 1
+
         if summary and summary.total_students > 0:
             key = (niveau_str, subject_name, session.group)
-            if key not in group_stats:
-                group_stats[key] = {"present": 0, "total": 0}
-            
             group_stats[key]["present"] += summary.present_count
-            group_stats[key]["total"] += summary.total_students
+            group_stats[key]["total_students"] += summary.total_students
+            group_stats[key]["total_absences"] += summary.absent_count
 
     # 3. Build attendance_by_group and subjects list
     attendance_by_group = []
-    total_rate_sum = 0.0
+    total_present = 0
+    total_students_all = 0
+    total_sessions_all = 0
+    total_absences_all = 0
 
     for (niveau, subject, group), stats in group_stats.items():
-        rate = round((stats["present"] / stats["total"]) * 100) if stats["total"] > 0 else 0
+        rate = (
+            round((stats["present"] / stats["total_students"]) * 100, 1)
+            if stats["total_students"] > 0
+            else 0.0
+        )
         attendance_by_group.append(
             AttendanceGroupStats(
                 niveau=niveau,
                 subject=subject,
                 group=group,
+                total_sessions=stats["total_sessions"],
+                total_absences=stats["total_absences"],
                 attendance_rate=rate
             )
         )
-        total_rate_sum += rate
+        total_present += stats["present"]
+        total_students_all += stats["total_students"]
+        total_sessions_all += stats["total_sessions"]
+        total_absences_all += stats["total_absences"]
 
-    overall_attendance_rate = round(total_rate_sum / len(attendance_by_group)) if attendance_by_group else 0.0
+    overall_attendance_rate = (
+        round((total_present / total_students_all) * 100, 1)
+        if total_students_all > 0
+        else 0.0
+    )
 
     # Build subjects array, sorting groups: "Cours" first, then alphabetically
     subjects_list = []
@@ -228,19 +342,23 @@ async def get_teacher_profile(
             )
         )
 
+    employee_id_val = cast(Optional[str], teacher.employee_id)
+
     return TeacherProfileResponse(
-        employee_id=teacher.employee_id or matricule,
-        last_name=teacher.last_name,
-        first_name=teacher.first_name,
-        email=teacher.email,
-        specialization=teacher.specialization,
+        employee_id=employee_id_val if employee_id_val else matricule,
+        last_name=cast(str, teacher.last_name),
+        first_name=cast(str, teacher.first_name),
+        email=cast(str, teacher.email),
+        specialization=cast(Optional[str], teacher.specialization),
         role="TEACHER",
-        avatar_url=teacher.avatar_url,
-        is_active=teacher.is_active,
+        avatar_url=cast(Optional[str], teacher.avatar_url),
+        phone=cast(Optional[str], teacher.phone),
+        is_active=cast(bool, teacher.is_active),
         total_subjects=len(distinct_subjects),
         total_groups=len(distinct_groups),
+        total_sessions=total_sessions_all,
+        total_absences=total_absences_all,
         overall_attendance_rate=overall_attendance_rate,
         attendance_by_group=attendance_by_group,
         subjects=subjects_list
     )
-

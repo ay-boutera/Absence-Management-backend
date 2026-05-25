@@ -113,6 +113,8 @@ class AttendanceGroupStats(BaseModel):
     niveau: str
     subject: str
     group: str
+    total_sessions: int = 0
+    total_absences: int = 0
     attendance_rate: float
 
 
@@ -130,11 +132,68 @@ class TeacherProfileResponse(BaseModel):
     specialization: Optional[str] = None
     role: str = "TEACHER"
     avatar_url: Optional[str] = None
+    phone: Optional[str] = None
     is_active: bool
 
     total_subjects: int
     total_groups: int
+    total_sessions: int
+    total_absences: int
     overall_attendance_rate: float
 
     attendance_by_group: List[AttendanceGroupStats]
     subjects: List[SubjectGroupStats]
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "employee_id": "ENS002",
+                "last_name": "NOUR ELFOUAD",
+                "first_name": "TRARI",
+                "email": "nf.trari@esi-sba.dz",
+                "specialization": "math",
+                "role": "TEACHER",
+                "avatar_url": None,
+                "phone": None,
+                "is_active": True,
+                "total_subjects": 1,
+                "total_groups": 3,
+                "total_sessions": 21,
+                "total_absences": 3,
+                "overall_attendance_rate": 85.7,
+                "attendance_by_group": [
+                    {
+                        "niveau": "1CS",
+                        "subject": "Archi",
+                        "group": "G6",
+                        "total_sessions": 7,
+                        "total_absences": 1,
+                        "attendance_rate": 85.7,
+                    },
+                    {
+                        "niveau": "1CS",
+                        "subject": "Archi",
+                        "group": "G2",
+                        "total_sessions": 7,
+                        "total_absences": 1,
+                        "attendance_rate": 85.7,
+                    },
+                    {
+                        "niveau": "1CS",
+                        "subject": "Archi",
+                        "group": "G3",
+                        "total_sessions": 7,
+                        "total_absences": 1,
+                        "attendance_rate": 85.7,
+                    },
+                ],
+                "subjects": [
+                    {
+                        "subject_name": "Archi",
+                        "niveau": "1CS",
+                        "groups": ["G2", "G3", "G6"],
+                    }
+                ],
+            }
+        }
+    )
