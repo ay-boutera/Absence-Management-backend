@@ -1,7 +1,7 @@
 """Add justifications table
 
 Revision ID: 1f2e3d4c5b6a
-Revises: e9c1a7b2d4f6
+Revises: a2b3c4d5e6f7
 Create Date: 2026-05-25 20:10:00.000000
 """
 
@@ -14,7 +14,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "1f2e3d4c5b6a"
-down_revision: Union[str, None] = "e9c1a7b2d4f6"
+down_revision: Union[str, None] = "a2b3c4d5e6f7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
