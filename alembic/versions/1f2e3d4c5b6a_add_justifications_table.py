@@ -19,7 +19,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-justification_scope_enum = sa.Enum(
+justification_scope_enum = postgresql.ENUM(
     "absence",
     "session",
     "range",
@@ -27,7 +27,7 @@ justification_scope_enum = sa.Enum(
     create_type=False,
 )
 
-justification_status_enum = sa.Enum(
+justification_status_enum = postgresql.ENUM(
     "pending",
     "approved",
     "rejected",
