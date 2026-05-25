@@ -53,7 +53,9 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    # BaseSettings loads required values from environment/.env at runtime.
+    # Some static analyzers still treat them as required __init__ args.
+    return Settings()  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
 
 
 settings = get_settings()
