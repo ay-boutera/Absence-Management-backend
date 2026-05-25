@@ -25,6 +25,7 @@ from app.models.student import AcademicStudent, Student
 from app.schemas.students import (
     AbsenceHistoryItem,
     AcademicStudentStatusOut,
+    ModuleAttendanceItem,
     StudentAttendanceListOut,
     StudentProfileOut,
     StudentStatusUpdate,
@@ -160,10 +161,90 @@ Returns a complete profile for a single student identified by their **matricule*
 - Academic info (year, group, filière, status)
 - Account info (avatar, creation date, last login) — merged from `student_users` if a linked account exists
 - Attendance summary: `total_absences`, `total_sessions`, `attendance_rate` (%)
+- Per-module attendance summary: `module_attendance[]` with `absences` for each module
 - Full absence history: per-session records with date, module, teacher, justification status
+
+**Input:**
+- Path parameter `matricule` (string), example: `232332029109`
+
+**Output:**
+- Full student profile object including:
+  - student identity and academic data
+  - global attendance KPIs
+  - `module_attendance` with per-module absence counters
+  - `absence_history` with `is_own_group` and `is_cross_session`
 
 **Auth:** Admin only.
 """,
+    responses={
+        200: {
+            "description": "Student profile fetched successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": "e4c5f24b-1bfa-45fd-9b9c-630ba72e54aa",
+                        "matricule": "232332029109",
+                        "nom": "ABADELIA",
+                        "prenom": "Mohammed imad eddine",
+                        "email": "mie.abadelia@esi-sba.dz",
+                        "filiere": "CS",
+                        "niveau": "1CS",
+                        "groupe": "G3",
+                        "status": "normal",
+                        "avatar_url": None,
+                        "phone": None,
+                        "is_active": True,
+                        "created_at": "2026-05-25T13:24:36.016766Z",
+                        "last_activity": None,
+                        "total_absences": 0,
+                        "total_sessions": 1,
+                        "attendance_rate": 100.0,
+                        "cross_session_count": 0,
+                        "module_attendance": [
+                            {
+                                "module_name": "Archi",
+                                "total_sessions": 1,
+                                "absences": 0,
+                                "attendance_rate": 100.0,
+                            },
+                            {
+                                "module_name": "ACSI",
+                                "total_sessions": 0,
+                                "absences": 0,
+                                "attendance_rate": None,
+                            },
+                        ],
+                        "absence_history": [
+                            {
+                                "absence_id": "b8091a68-ad52-4f3e-871e-8077cdc993aa",
+                                "session_id": "a05509e4-290d-416f-9311-100ad3fc11cc",
+                                "date": "2026-05-20T00:00:00",
+                                "start_time": "08:00:00",
+                                "end_time": "15:00:00",
+                                "module_name": "Archi",
+                                "teacher_name": "TRARI NOUR ELFOUAD",
+                                "is_absent": False,
+                                "justification_status": None,
+                                "session_group": "G3",
+                                "is_own_group": True,
+                                "is_cross_session": False,
+                            }
+                        ],
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Student not found",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Student with matricule '232332029109' not found."
+                    }
+                }
+            },
+        },
+    },
 )
 async def get_student_profile(
     matricule: str,
@@ -244,6 +325,7 @@ async def get_student_profile(
                 justification_status=absence.statut_justificatif,
                 session_group=session.group,
                 is_own_group=is_own_group,
+                is_cross_session=not is_own_group,
             )
         )
 
@@ -252,6 +334,55 @@ async def get_student_profile(
         attendance_rate = round((1 - total_absences / total_sessions) * 100, 1)
     else:
         attendance_rate = 100.0
+
+    # ── 7. Compute per-module attendance (own group sessions only) ────────────
+    module_rows = (await db.execute(select(Module).order_by(Module.nom.asc()))).scalars().all()
+    sessions_per_module_rows = (
+        await db.execute(
+            select(Session.module_id, func.count(Session.id))
+            .where(
+                and_(
+                    Session.group == academic.groupe,
+                    Session.year == academic.niveau,
+                )
+            )
+            .group_by(Session.module_id)
+        )
+    ).all()
+    absences_per_module_rows = (
+        await db.execute(
+            select(Session.module_id, func.count(Absence.id))
+            .join(Session, Absence.session_id == Session.id)
+            .where(
+                and_(
+                    Absence.student_matricule == matricule,
+                    Absence.is_absent.is_(True),
+                    Session.group == academic.groupe,
+                    Session.year == academic.niveau,
+                )
+            )
+            .group_by(Session.module_id)
+        )
+    ).all()
+
+    sessions_per_module = {module_id: count for module_id, count in sessions_per_module_rows}
+    absences_per_module = {module_id: count for module_id, count in absences_per_module_rows}
+    module_attendance: list[ModuleAttendanceItem] = []
+    for module in module_rows:
+        module_total_sessions = int(sessions_per_module.get(module.id, 0) or 0)
+        module_absences = int(absences_per_module.get(module.id, 0) or 0)
+        module_rate = None
+        if module_total_sessions > 0:
+            module_rate = round((1 - module_absences / module_total_sessions) * 100, 1)
+
+        module_attendance.append(
+            ModuleAttendanceItem(
+                module_name=module.nom,
+                total_sessions=module_total_sessions,
+                absences=module_absences,
+                attendance_rate=module_rate,
+            )
+        )
 
     return StudentProfileOut(
         id=academic.id,
@@ -274,6 +405,7 @@ async def get_student_profile(
         total_sessions=total_sessions,
         attendance_rate=attendance_rate,
         cross_session_count=cross_session_count,
+        module_attendance=module_attendance,
         absence_history=history,
     )
 
