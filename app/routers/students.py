@@ -1,12 +1,3 @@
-"""
-routers/students.py — Academic Student Endpoints
-=================================================
-
-GET   /api/v1/students                       Admin: paginated student list with absence counts.
-GET   /api/v1/students/{matricule}           Admin: full student profile with absence history.
-PATCH /api/v1/students/{student_id}/status   Admin: update a student's academic status (Feature 3).
-"""
-
 from __future__ import annotations
 
 from datetime import datetime

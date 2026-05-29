@@ -5,6 +5,10 @@ from typing import Callable
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import UserRole, settings
@@ -171,6 +175,7 @@ def require_role(allowed_role: UserRole) -> Callable:
 async def get_current_user_bearer(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    token_auth: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)
 ) -> RoleUser:
     authorization = request.headers.get("Authorization")
     token = ""
