@@ -70,19 +70,47 @@ async def my_schedule(
 
         if student_year in YEARS_WITH_SPECIALITY:
             student_speciality = student.program or None
-        else:
-            student_section = student.program if student.program else None
+
+        if student_group:
+            # Infer section from group by checking any planning session that has this group and a section
+            student_section = (await db.execute(
+                select(PlanningSession.section)
+                .where(
+                    and_(
+                        PlanningSession.year == student_year,
+                        PlanningSession.group == student_group,
+                        PlanningSession.section.is_not(None),
+                    )
+                )
+                .limit(1)
+            )).scalar_one_or_none()
 
         filters = [PlanningSession.year == student_year]
 
-        if student_section is not None:
-            filters.append(or_(PlanningSession.section == student_section, PlanningSession.section.is_(None)))
         if student_speciality is not None:
             filters.append(or_(PlanningSession.speciality == student_speciality, PlanningSession.speciality.is_(None)))
 
-        if student_group:
-            filters.append(or_(PlanningSession.group == student_group, PlanningSession.group.is_(None)))
+        if student_group and student_section:
+            # Group matches, OR (Group IS NULL AND (Section matches OR Section IS NULL))
+            filters.append(
+                or_(
+                    PlanningSession.group == student_group,
+                    and_(
+                        PlanningSession.group.is_(None),
+                        or_(PlanningSession.section == student_section, PlanningSession.section.is_(None)),
+                    ),
+                )
+            )
+        elif student_group:
+            # No section inferred. Group matches, OR (Group IS NULL AND Section IS NULL)
+            filters.append(
+                or_(
+                    PlanningSession.group == student_group,
+                    and_(PlanningSession.group.is_(None), PlanningSession.section.is_(None)),
+                )
+            )
         else:
+            # No group assigned. See only global sessions.
             filters.append(PlanningSession.group.is_(None))
 
         base_q = base_q.where(and_(*filters))
