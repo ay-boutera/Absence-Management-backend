@@ -142,108 +142,10 @@ async def list_students_with_absences(
     return items
 
 # ── GET /students/{matricule} ──────────────────────────────────────────────────
-@router.get(
-    "/students/{matricule}",
-    response_model=StudentProfileOut,
-    summary="Full student profile with absence history (Admin)",
-    description="""
-Returns a complete profile for a single student identified by their **matricule**.
-
-**Includes:**
-- Personal info (name, email, phone, avatar)
-- Academic info (year, group, filière, status)
-- Account info (avatar, creation date, last login) — merged from `student_users` if a linked account exists
-- Attendance summary: `total_absences`, `total_sessions`, `attendance_rate` (%)
-- Per-module attendance summary: `module_attendance[]` with `absences` for each module
-- Full absence history: per-session records with date, module, teacher, justification status
-
-**Input:**
-- Path parameter `matricule` (string), example: `232332029109`
-
-**Output:**
-- Full student profile object including:
-  - student identity and academic data
-  - global attendance KPIs
-  - `module_attendance` with per-module absence counters
-  - `absence_history` with `is_own_group` and `is_cross_session`
-
-**Auth:** Admin only.
-""",
-    responses={
-        200: {
-            "description": "Student profile fetched successfully",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "id": "e4c5f24b-1bfa-45fd-9b9c-630ba72e54aa",
-                        "matricule": "232332029109",
-                        "nom": "ABADELIA",
-                        "prenom": "Mohammed imad eddine",
-                        "email": "mie.abadelia@esi-sba.dz",
-                        "filiere": "CS",
-                        "niveau": "1CS",
-                        "groupe": "G3",
-                        "status": "normal",
-                        "avatar_url": None,
-                        "phone": None,
-                        "is_active": True,
-                        "created_at": "2026-05-25T13:24:36.016766Z",
-                        "last_activity": None,
-                        "total_absences": 0,
-                        "total_sessions": 1,
-                        "attendance_rate": 100.0,
-                        "cross_session_count": 0,
-                        "module_attendance": [
-                            {
-                                "module_name": "Archi",
-                                "total_sessions": 1,
-                                "absences": 0,
-                                "attendance_rate": 100.0,
-                            },
-                            {
-                                "module_name": "ACSI",
-                                "total_sessions": 0,
-                                "absences": 0,
-                                "attendance_rate": None,
-                            },
-                        ],
-                        "absence_history": [
-                            {
-                                "absence_id": "b8091a68-ad52-4f3e-871e-8077cdc993aa",
-                                "session_id": "a05509e4-290d-416f-9311-100ad3fc11cc",
-                                "date": "2026-05-20T00:00:00",
-                                "start_time": "08:00:00",
-                                "end_time": "15:00:00",
-                                "module_name": "Archi",
-                                "teacher_name": "TRARI NOUR ELFOUAD",
-                                "is_absent": False,
-                                "justification_status": None,
-                                "session_group": "G3",
-                                "is_own_group": True,
-                                "is_cross_session": False,
-                            }
-                        ],
-                    }
-                }
-            },
-        },
-        404: {
-            "description": "Student not found",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "detail": "Student with matricule '232332029109' not found."
-                    }
-                }
-            },
-        },
-    },
-)
-async def get_student_profile(
+async def _get_student_profile_logic(
     matricule: str,
-    current_user=Depends(require_role(UserRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-):
+    db: AsyncSession,
+) -> StudentProfileOut:
     # ── 1. Fetch academic record ───────────────────────────────────────────────
     academic = (
         await db.execute(
@@ -428,6 +330,77 @@ async def get_student_profile(
         module_attendance=module_attendance,
         absence_history=history,
     )
+
+
+
+@router.get(
+    "/students/me",
+    response_model=StudentProfileOut,
+    summary="Get my student profile and absence summary",
+    description="""
+Returns a complete profile for the authenticated student.
+
+**Includes:**
+- Personal and academic info.
+- Attendance summary: total_absences, attendance_rate.
+- Per-module attendance summary: module_attendance[].
+- Full absence history.
+
+**Auth:** Student only.
+""",
+    responses={
+        200: {"description": "Student profile fetched successfully"},
+        404: {"description": "Student not found"},
+    },
+)
+async def get_my_profile(
+    current_user=Depends(require_role(UserRole.STUDENT)),
+    db: AsyncSession = Depends(get_db),
+):
+    student_matricule = current_user.student_id
+    if not student_matricule:
+        raise HTTPException(status_code=400, detail="Student profile missing matricule")
+    return await _get_student_profile_logic(student_matricule, db)
+
+
+@router.get(
+    "/students/{matricule}",
+    response_model=StudentProfileOut,
+    summary="Full student profile with absence history (Admin)",
+    description="""
+Returns a complete profile for a single student identified by their **matricule**.
+
+**Includes:**
+- Personal info (name, email, phone, avatar)
+- Academic info (year, group, filière, status)
+- Account info (avatar, creation date, last login) — merged from `student_users` if a linked account exists
+- Attendance summary: `total_absences`, `total_sessions`, `attendance_rate` (%)
+- Per-module attendance summary: `module_attendance[]` with `absences` for each module
+- Full absence history: per-session records with date, module, teacher, justification status
+
+**Input:**
+- Path parameter `matricule` (string), example: `232332029109`
+
+**Output:**
+- Full student profile object including:
+  - student identity and academic data
+  - global attendance KPIs
+  - `module_attendance` with per-module absence counters
+  - `absence_history` with `is_own_group` and `is_cross_session`
+
+**Auth:** Admin only.
+""",
+    responses={
+        200: {"description": "Student profile fetched successfully"},
+        404: {"description": "Student not found"},
+    },
+)
+async def get_student_profile(
+    matricule: str,
+    current_user=Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _get_student_profile_logic(matricule, db)
 
 
 # ── PATCH /students/{id}/status ────────────────────────────────────────────────

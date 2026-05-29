@@ -67,6 +67,7 @@ async def _resolve_user_from_token(token: str, db: AsyncSession) -> RoleUser:
 async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    token_auth: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)
 ) -> RoleUser:
     token = get_token_from_cookie(request, ACCESS_COOKIE_NAME)
     if not token:
