@@ -357,10 +357,21 @@ async def get_my_profile(
     current_user=Depends(require_role(UserRole.STUDENT)),
     db: AsyncSession = Depends(get_db),
 ):
-    student_matricule = current_user.student_id
-    if not student_matricule:
-        raise HTTPException(status_code=400, detail="Student profile missing matricule")
-    return await _get_student_profile_logic(student_matricule, db)
+    academic = (
+        await db.execute(
+            select(AcademicStudent).where(AcademicStudent.email == current_user.email)
+        )
+    ).scalar_one_or_none()
+    if academic is not None:
+        return await _get_student_profile_logic(cast(str, academic.matricule), db)
+
+    if current_user.student_id:
+        return await _get_student_profile_logic(str(current_user.student_id), db)
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Student profile not found for account '{current_user.email}'.",
+    )
 
 
 @router.get(
