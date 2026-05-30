@@ -1,10 +1,3 @@
-"""
-models/student.py — Standalone Student Model
-=============================================
-Student has its own table with all auth fields embedded directly.
-No dependency on a shared Account/users table.
-"""
-
 import uuid
 from datetime import datetime, timezone
 

@@ -357,20 +357,47 @@ async def get_my_profile(
     current_user=Depends(require_role(UserRole.STUDENT)),
     db: AsyncSession = Depends(get_db),
 ):
+    normalized_email = (current_user.email or "").strip().lower()
     academic = (
         await db.execute(
-            select(AcademicStudent).where(AcademicStudent.email == current_user.email)
+            select(AcademicStudent).where(
+                func.lower(AcademicStudent.email) == normalized_email
+            )
         )
     ).scalar_one_or_none()
     if academic is not None:
         return await _get_student_profile_logic(cast(str, academic.matricule), db)
 
     if current_user.student_id:
-        return await _get_student_profile_logic(str(current_user.student_id), db)
+        return StudentProfileOut(
+            id=cast(UUID, current_user.id),
+            matricule=str(current_user.student_id).strip(),
+            nom=cast(str, current_user.last_name),
+            prenom=cast(str, current_user.first_name),
+            email=cast(str, current_user.email),
+            filiere=cast(str, current_user.program),
+            niveau=cast(str, current_user.level),
+            groupe=cast(str, current_user.group or ""),
+            status="normal",
+            avatar_url=cast(Optional[str], current_user.avatar_url),
+            phone=cast(Optional[str], current_user.phone),
+            is_active=cast(Optional[bool], current_user.is_active),
+            created_at=cast(Optional[datetime], current_user.created_at),
+            last_activity=cast(Optional[datetime], current_user.last_activity),
+            total_absences=0,
+            total_sessions=0,
+            attendance_rate=100.0,
+            cross_session_count=0,
+            module_attendance=[],
+            absence_history=[],
+        )
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Student profile not found for account '{current_user.email}'.",
+        detail=(
+            "Student profile not found for account "
+            f"email '{current_user.email}' and student_id '{current_user.student_id}'."
+        ),
     )
 
 
