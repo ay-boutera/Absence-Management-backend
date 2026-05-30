@@ -332,6 +332,159 @@ async def _get_student_profile_logic(
     )
 
 
+async def _get_student_profile_from_account(
+    student: Student,
+    db: AsyncSession,
+) -> StudentProfileOut:
+    student_matricule = str(student.student_id).strip()
+    group_value = student.group or ""
+
+    absence_rows = (
+        await db.execute(
+            select(Absence, Session, Module, Teacher)
+            .join(Session, Absence.session_id == Session.id)
+            .join(Module, Session.module_id == Module.id)
+            .join(Teacher, Session.teacher_id == Teacher.id)
+            .where(Absence.student_matricule == student_matricule)
+            .order_by(Session.date.desc())
+        )
+    ).all()
+
+    total_sessions_result = await db.execute(
+        select(func.count(Session.id)).where(
+            and_(Session.group == group_value, Session.year == student.level)
+        )
+    )
+    total_sessions = total_sessions_result.scalar_one() or 0
+
+    history: list[AbsenceHistoryItem] = []
+    total_absences = 0
+    cross_session_count = 0
+
+    for absence, session, module, teacher in absence_rows:
+        is_own_group = session.group == group_value and session.year == student.level
+
+        if is_own_group and absence.is_absent:
+            total_absences += 1
+        if not is_own_group:
+            cross_session_count += 1
+
+        history.append(
+            AbsenceHistoryItem(
+                absence_id=absence.id,
+                session_id=session.id,
+                date=session.date,
+                start_time=str(session.start_time),
+                end_time=str(session.end_time),
+                module_name=module.nom if module else None,
+                teacher_name=f"{teacher.first_name} {teacher.last_name}" if teacher else None,
+                is_absent=absence.is_absent,
+                justification_status=absence.statut_justificatif,
+                session_group=session.group,
+                is_own_group=is_own_group,
+                is_cross_session=not is_own_group,
+            )
+        )
+
+    if total_sessions > 0:
+        attendance_rate = round((1 - total_absences / total_sessions) * 100, 1)
+    else:
+        attendance_rate = 100.0
+
+    own_group_semesters_rows = (
+        await db.execute(
+            select(Session.semester)
+            .where(
+                and_(
+                    Session.group == group_value,
+                    Session.year == student.level,
+                    Session.semester.is_not(None),
+                )
+            )
+            .distinct()
+        )
+    ).all()
+    own_group_semesters = [row[0] for row in own_group_semesters_rows if row[0]]
+
+    module_scope_q = (
+        select(Module)
+        .join(Session, Session.module_id == Module.id)
+        .where(Session.year == student.level)
+    )
+    if own_group_semesters:
+        module_scope_q = module_scope_q.where(Session.semester.in_(own_group_semesters))
+
+    module_rows = (
+        await db.execute(module_scope_q.distinct().order_by(Module.nom.asc()))
+    ).scalars().all()
+    sessions_per_module_rows = (
+        await db.execute(
+            select(Session.module_id, func.count(Session.id))
+            .where(
+                and_(Session.group == group_value, Session.year == student.level)
+            )
+            .group_by(Session.module_id)
+        )
+    ).all()
+    absences_per_module_rows = (
+        await db.execute(
+            select(Session.module_id, func.count(Absence.id))
+            .join(Session, Absence.session_id == Session.id)
+            .where(
+                and_(
+                    Absence.student_matricule == student_matricule,
+                    Absence.is_absent.is_(True),
+                    Session.group == group_value,
+                    Session.year == student.level,
+                )
+            )
+            .group_by(Session.module_id)
+        )
+    ).all()
+
+    sessions_per_module = {module_id: count for module_id, count in sessions_per_module_rows}
+    absences_per_module = {module_id: count for module_id, count in absences_per_module_rows}
+    module_attendance: list[ModuleAttendanceItem] = []
+    for module in module_rows:
+        module_total_sessions = int(sessions_per_module.get(module.id, 0) or 0)
+        module_absences = int(absences_per_module.get(module.id, 0) or 0)
+        module_rate = None
+        if module_total_sessions > 0:
+            module_rate = round((1 - module_absences / module_total_sessions) * 100, 1)
+
+        module_attendance.append(
+            ModuleAttendanceItem(
+                module_name=cast(str, module.nom),
+                total_sessions=module_total_sessions,
+                absences=module_absences,
+                attendance_rate=module_rate,
+            )
+        )
+
+    return StudentProfileOut(
+        id=cast(UUID, student.id),
+        matricule=student_matricule,
+        nom=cast(str, student.last_name),
+        prenom=cast(str, student.first_name),
+        email=cast(str, student.email),
+        filiere=cast(str, student.program),
+        niveau=cast(str, student.level),
+        groupe=cast(str, group_value),
+        status="normal",
+        avatar_url=cast(Optional[str], student.avatar_url),
+        phone=cast(Optional[str], student.phone),
+        is_active=cast(Optional[bool], student.is_active),
+        created_at=cast(Optional[datetime], student.created_at),
+        last_activity=cast(Optional[datetime], student.last_activity),
+        total_absences=total_absences,
+        total_sessions=total_sessions,
+        attendance_rate=attendance_rate,
+        cross_session_count=cross_session_count,
+        module_attendance=module_attendance,
+        absence_history=history,
+    )
+
+
 
 @router.get(
     "/students/me",
@@ -369,28 +522,7 @@ async def get_my_profile(
         return await _get_student_profile_logic(cast(str, academic.matricule), db)
 
     if current_user.student_id:
-        return StudentProfileOut(
-            id=cast(UUID, current_user.id),
-            matricule=str(current_user.student_id).strip(),
-            nom=cast(str, current_user.last_name),
-            prenom=cast(str, current_user.first_name),
-            email=cast(str, current_user.email),
-            filiere=cast(str, current_user.program),
-            niveau=cast(str, current_user.level),
-            groupe=cast(str, current_user.group or ""),
-            status="normal",
-            avatar_url=cast(Optional[str], current_user.avatar_url),
-            phone=cast(Optional[str], current_user.phone),
-            is_active=cast(Optional[bool], current_user.is_active),
-            created_at=cast(Optional[datetime], current_user.created_at),
-            last_activity=cast(Optional[datetime], current_user.last_activity),
-            total_absences=0,
-            total_sessions=0,
-            attendance_rate=100.0,
-            cross_session_count=0,
-            module_attendance=[],
-            absence_history=[],
-        )
+        return await _get_student_profile_from_account(current_user, db)
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
