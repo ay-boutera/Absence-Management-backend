@@ -21,7 +21,7 @@ class NumberedCanvas(Canvas):
 
     def showPage(self):
         self._saved_page_states.append(dict(self.__dict__))
-        self._startPage()
+        self._startPage()  # type: ignore[attr-defined]
 
     def save(self):
         page_count = len(self._saved_page_states)
@@ -34,7 +34,7 @@ class NumberedCanvas(Canvas):
     def _draw_page_number(self, page_count: int):
         self.setFont("Helvetica", 9)
         self.setFillColor(colors.grey)
-        self.drawRightString(285 * mm, 10 * mm, f"Page {self._pageNumber} of {page_count}")
+        self.drawRightString(285 * mm, 10 * mm, f"Page {self.getPageNumber()} of {page_count}")
 
 
 def build_csv_response(headers: list[str], rows: list[list], filename: str) -> StreamingResponse:
@@ -99,16 +99,14 @@ def build_pdf_response(
     table = Table(table_data, repeatRows=1)
     table_style = TableStyle(
         [
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4a6fa5")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, 0), 9),
             ("ALIGN", (0, 0), (-1, -1), "LEFT"),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
             ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
             ("FONTSIZE", (0, 1), (-1, -1), 8),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f2f2f2")]),
             ("LEFTPADDING", (0, 0), (-1, -1), 5),
             ("RIGHTPADDING", (0, 0), (-1, -1), 5),
             ("TOPPADDING", (0, 0), (-1, -1), 4),
