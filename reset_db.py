@@ -8,7 +8,8 @@ async def init_db():
     print("Creating all tables from models...")
     try:
         async with engine.begin() as conn:
-            # This creates all tables defined in your models
+            # This drops and creates all tables defined in your models
+            await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
         print("✅ Tables created successfully.")
     except Exception as e:
