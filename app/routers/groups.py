@@ -280,9 +280,12 @@ async def get_group_students(
     students = list(students_result.scalars().all())
 
     if not students:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Aucun étudiant trouvé pour le groupe {group_name}.",
+        return GroupStudentsResponse(
+            group_name=group_name,
+            year=year,
+            total_students=0,
+            total_sessions=total_sessions,
+            students=[],
         )
 
     # 3. Find ALL eligible sessions (from any group) for this teacher + modules
