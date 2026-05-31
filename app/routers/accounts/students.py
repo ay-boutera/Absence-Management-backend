@@ -118,6 +118,7 @@ async def get_students(
 
     items = [
         StudentAttendanceListOut(
+            account_id=student.id,
             student_id=student.student_id,
             full_name=f"{student.last_name} {student.first_name}",
             email=student.email,
