@@ -384,9 +384,10 @@ async def get_session_attendance(
     # Students from group membership
     group_students: list[AcademicStudent] = []
     if all_groups:
-        filters = [AcademicStudent.groupe.in_(all_groups)]
+        normalized_groups = [g.lower().strip() for g in all_groups]
+        filters = [func.trim(func.lower(AcademicStudent.groupe)).in_(normalized_groups)]
         if session.year:
-            filters.append(AcademicStudent.niveau == session.year)
+            filters.append(func.trim(func.lower(AcademicStudent.niveau)) == session.year.lower().strip())
         group_students = list(
             (
                 await db.execute(select(AcademicStudent).where(and_(*filters)))
@@ -569,9 +570,10 @@ async def get_session_students(
 
     group_filters = []
     if all_groups:
-        group_filters.append(func.lower(AcademicStudent.groupe).in_([g.lower() for g in all_groups]))
+        normalized_groups = [g.lower().strip() for g in all_groups]
+        group_filters.append(func.trim(func.lower(AcademicStudent.groupe)).in_(normalized_groups))
     if session.year:
-        group_filters.append(func.lower(AcademicStudent.niveau) == session.year.lower())
+        group_filters.append(func.trim(func.lower(AcademicStudent.niveau)) == session.year.lower().strip())
 
     direct_matricule_rows = (
         await db.execute(
@@ -662,9 +664,10 @@ async def get_session_summary(
 
     group_filters = []
     if all_groups:
-        group_filters.append(func.lower(AcademicStudent.groupe).in_([g.lower() for g in all_groups]))
+        normalized_groups = [g.lower().strip() for g in all_groups]
+        group_filters.append(func.trim(func.lower(AcademicStudent.groupe)).in_(normalized_groups))
     if session.year:
-        group_filters.append(func.lower(AcademicStudent.niveau) == session.year.lower())
+        group_filters.append(func.trim(func.lower(AcademicStudent.niveau)) == session.year.lower().strip())
 
     direct_matricule_rows = (
         await db.execute(

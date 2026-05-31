@@ -29,7 +29,7 @@ from app.helpers.security import (
 )
 from app.models import ActionType, AuditLog, PasswordResetToken
 from app.models.admin import Admin
-from app.models.student import Student
+from app.models.student import AcademicStudent, Student
 from app.models.teacher import Teacher
 from app.schemas import (
     AdminAccountCreate,
@@ -225,6 +225,10 @@ class AuthService:
                 detail="Student ID is already registered.",
             )
 
+        level = str(data.level).strip()
+        group = None if data.group is None else str(data.group).strip() or None
+        program = str(data.program).strip()
+
         user = Student(
             **self._build_common_registration_kwargs(
                 email=email,
@@ -234,9 +238,9 @@ class AuthService:
                 phone=data.phone,
             ),
             student_id=student_id,
-            program=str(data.program).strip(),
-            level=str(data.level).strip(),
-            group=None if data.group is None else str(data.group).strip() or None,
+            program=program,
+            level=level,
+            group=group,
             can_submit_justifications=data.can_submit_justifications,
             can_view_attendance=data.can_view_attendance,
             can_confirm_rattrapage=data.can_confirm_rattrapage,
@@ -244,6 +248,36 @@ class AuthService:
         )
         self.db.add(user)
         await self.db.flush()
+
+        # Also sync the AcademicStudent ("students" table) so this student
+        # appears in session attendance lists, just like CSV-imported students.
+        existing_academic = (
+            await self.db.execute(
+                select(AcademicStudent).where(AcademicStudent.matricule == student_id)
+            )
+        ).scalar_one_or_none()
+        if existing_academic is None:
+            self.db.add(
+                AcademicStudent(
+                    matricule=student_id,
+                    nom=str(data.last_name).strip(),
+                    prenom=str(data.first_name).strip(),
+                    filiere=program,
+                    niveau=level,
+                    groupe=group or "",
+                    email=email,
+                )
+            )
+        else:
+            existing_academic.nom = str(data.last_name).strip()
+            existing_academic.prenom = str(data.first_name).strip()
+            existing_academic.filiere = program
+            existing_academic.niveau = level
+            existing_academic.groupe = group or ""
+            existing_academic.email = email
+            self.db.add(existing_academic)
+        await self.db.flush()
+
         await self._log_account_created(user, ip_address=ip_address, user_agent=user_agent)
         return user
 
@@ -427,6 +461,37 @@ class AuthService:
 
         self.db.add(user)
         await self.db.flush()
+
+        # Sync AcademicStudent row so changes to level/group are reflected
+        # in session attendance queries.
+        current_matricule = str(user.student_id).strip()
+        existing_academic = (
+            await self.db.execute(
+                select(AcademicStudent).where(AcademicStudent.matricule == current_matricule)
+            )
+        ).scalar_one_or_none()
+        if existing_academic is None:
+            self.db.add(
+                AcademicStudent(
+                    matricule=current_matricule,
+                    nom=str(user.last_name).strip(),
+                    prenom=str(user.first_name).strip(),
+                    filiere=str(user.program).strip(),
+                    niveau=str(user.level).strip(),
+                    groupe=str(user.group or "").strip(),
+                    email=str(user.email).strip(),
+                )
+            )
+        else:
+            existing_academic.nom = str(user.last_name).strip()
+            existing_academic.prenom = str(user.first_name).strip()
+            existing_academic.filiere = str(user.program).strip()
+            existing_academic.niveau = str(user.level).strip()
+            existing_academic.groupe = str(user.group or "").strip()
+            existing_academic.email = str(user.email).strip()
+            self.db.add(existing_academic)
+        await self.db.flush()
+
         return user
 
     async def update_teacher_account(
