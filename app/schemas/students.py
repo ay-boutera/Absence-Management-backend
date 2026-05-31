@@ -33,6 +33,7 @@ class AcademicStudentStatusOut(BaseModel):
 
 class StudentAttendanceListOut(BaseModel):
     """One row in the admin attendance list."""
+    account_id: Optional[UUID] = None   # UUID from student_users (for PATCH /accounts/students/{id})
     student_id: str
     full_name: str
     email: str
