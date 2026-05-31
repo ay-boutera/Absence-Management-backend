@@ -100,7 +100,7 @@ async def list_students_with_absences(
     if year:
         filters.append(AcademicStudent.niveau == year)
     if group:
-        filters.append(AcademicStudent.groupe == group)
+        filters.append(func.lower(AcademicStudent.groupe) == group.lower())
     if status_query:
         filters.append(AcademicStudent.status == status_query)
 

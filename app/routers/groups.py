@@ -168,9 +168,9 @@ async def get_my_groups(
 
     for (group_name, year), info in group_map.items():
         # Count students
-        student_filters = [AcademicStudent.groupe == group_name]
+        student_filters = [func.lower(AcademicStudent.groupe) == group_name.lower()]
         if year:
-            student_filters.append(AcademicStudent.niveau == year)
+            student_filters.append(func.lower(AcademicStudent.niveau) == year.lower())
 
         student_count_result = await db.execute(
             select(func.count()).select_from(AcademicStudent).where(and_(*student_filters))
@@ -268,9 +268,9 @@ async def get_group_students(
     total_sessions = len(base_session_ids)
 
     # 2. Get all students in this group
-    student_filters = [AcademicStudent.groupe == group_name]
+    student_filters = [func.lower(AcademicStudent.groupe) == group_name.lower()]
     if year:
-        student_filters.append(AcademicStudent.niveau == year)
+        student_filters.append(func.lower(AcademicStudent.niveau) == year.lower())
 
     students_result = await db.execute(
         select(AcademicStudent).where(and_(*student_filters)).order_by(
@@ -372,10 +372,10 @@ async def get_student_absence_history(
     # 1. Verify student exists in this group
     student_filters = [
         AcademicStudent.matricule == matricule,
-        AcademicStudent.groupe == group_name,
+        func.lower(AcademicStudent.groupe) == group_name.lower(),
     ]
     if year:
-        student_filters.append(AcademicStudent.niveau == year)
+        student_filters.append(func.lower(AcademicStudent.niveau) == year.lower())
 
     student = (
         await db.execute(select(AcademicStudent).where(and_(*student_filters)))
@@ -604,11 +604,15 @@ async def get_all_groups(
 
     items = []
     for info in unique_groups:
-        student_filters = [AcademicStudent.groupe == info["group_name"]]
+        student_filters = []
+        if info["group_name"]:
+            student_filters.append(func.lower(AcademicStudent.groupe) == info["group_name"].lower())
+        else:
+            student_filters.append(AcademicStudent.groupe.is_(None))
         if info["year"]:
-            student_filters.append(AcademicStudent.niveau == info["year"])
+            student_filters.append(func.lower(AcademicStudent.niveau) == info["year"].lower())
         if info["speciality"]:
-            student_filters.append(AcademicStudent.filiere == info["speciality"])
+            student_filters.append(func.lower(AcademicStudent.filiere) == info["speciality"].lower())
             
         student_count = (await db.execute(select(func.count()).select_from(AcademicStudent).where(and_(*student_filters)))).scalar() or 0
         

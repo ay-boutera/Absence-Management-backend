@@ -556,11 +556,45 @@ async def get_session_students(
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session introuvable.")
 
-    student_filters = []
+    all_groups: list[str] = [session.group] if session.group else []
+    extra_group_rows = (
+        await db.execute(
+            select(session_groups.c.group_name).where(
+                session_groups.c.session_id == session_id
+            )
+        )
+    ).all()
+    all_groups += [row[0] for row in extra_group_rows]
+    all_groups = list(dict.fromkeys(all_groups))
+
+    group_filters = []
+    if all_groups:
+        group_filters.append(func.lower(AcademicStudent.groupe).in_([g.lower() for g in all_groups]))
     if session.year:
-        student_filters.append(AcademicStudent.niveau == session.year)
-    if session.group:
-        student_filters.append(AcademicStudent.groupe == session.group)
+        group_filters.append(func.lower(AcademicStudent.niveau) == session.year.lower())
+
+    direct_matricule_rows = (
+        await db.execute(
+            select(session_students.c.student_matricule).where(
+                session_students.c.session_id == session_id
+            )
+        )
+    ).all()
+    direct_matricules = [row[0] for row in direct_matricule_rows]
+
+    student_filters = []
+    if group_filters and direct_matricules:
+        student_filters.append(or_(
+            and_(*group_filters),
+            AcademicStudent.matricule.in_(direct_matricules)
+        ))
+    elif group_filters:
+        student_filters.extend(group_filters)
+    elif direct_matricules:
+        student_filters.append(AcademicStudent.matricule.in_(direct_matricules))
+    else:
+        # No groups and no direct students
+        return StudentListResponse(total=0, students=[])
 
     if q:
         like_pattern = f"%{q}%"
@@ -615,18 +649,50 @@ async def get_session_summary(
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session introuvable.")
 
-    student_filters = []
-    if session.year:
-        student_filters.append(AcademicStudent.niveau == session.year)
-    if session.group:
-        student_filters.append(AcademicStudent.groupe == session.group)
-
-    total_result = await db.execute(
-        select(func.count()).select_from(AcademicStudent).where(
-            and_(*student_filters) if student_filters else True
+    all_groups: list[str] = [session.group] if session.group else []
+    extra_group_rows = (
+        await db.execute(
+            select(session_groups.c.group_name).where(
+                session_groups.c.session_id == session_id
+            )
         )
-    )
-    total_students = total_result.scalar_one() or 0
+    ).all()
+    all_groups += [row[0] for row in extra_group_rows]
+    all_groups = list(dict.fromkeys(all_groups))
+
+    group_filters = []
+    if all_groups:
+        group_filters.append(func.lower(AcademicStudent.groupe).in_([g.lower() for g in all_groups]))
+    if session.year:
+        group_filters.append(func.lower(AcademicStudent.niveau) == session.year.lower())
+
+    direct_matricule_rows = (
+        await db.execute(
+            select(session_students.c.student_matricule).where(
+                session_students.c.session_id == session_id
+            )
+        )
+    ).all()
+    direct_matricules = [row[0] for row in direct_matricule_rows]
+
+    student_filters = []
+    if group_filters and direct_matricules:
+        student_filters.append(or_(
+            and_(*group_filters),
+            AcademicStudent.matricule.in_(direct_matricules)
+        ))
+    elif group_filters:
+        student_filters.extend(group_filters)
+    elif direct_matricules:
+        student_filters.append(AcademicStudent.matricule.in_(direct_matricules))
+
+    if student_filters:
+        total_result = await db.execute(
+            select(func.count()).select_from(AcademicStudent).where(and_(*student_filters))
+        )
+        total_students = total_result.scalar_one() or 0
+    else:
+        total_students = 0
 
     absences = list(
         (await db.execute(select(Absence).where(Absence.session_id == session_id))).scalars().all()

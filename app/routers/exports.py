@@ -427,7 +427,7 @@ async def export_students_csv(
     if year:
         filters.append(AcademicStudent.niveau == year)
     if group:
-        filters.append(AcademicStudent.groupe == group)
+        filters.append(func.lower(AcademicStudent.groupe) == group.lower())
     if search:
         like = f"%{search}%"
         filters.append(
@@ -514,7 +514,7 @@ async def export_students_pdf(
     if year:
         filters.append(AcademicStudent.niveau == year)
     if group:
-        filters.append(AcademicStudent.groupe == group)
+        filters.append(func.lower(AcademicStudent.groupe) == group.lower())
     if search:
         like = f"%{search}%"
         filters.append(or_(AcademicStudent.nom.ilike(like), AcademicStudent.prenom.ilike(like), AcademicStudent.email.ilike(like)))
