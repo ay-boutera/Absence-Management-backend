@@ -24,6 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config.enums import UserRole
 from app.db import get_db
+from app.helpers.absence import UNEXCUSED_ABSENCE
 from app.helpers.permissions import require_role, require_active_user
 from app.models import (
     Absence,
@@ -190,7 +191,7 @@ async def get_my_groups(
         )
         total_sessions = session_count_result.scalar() or 0
 
-        # Count total absences across all sessions for this group
+        # Count unexcused absences across all sessions for this group
         absence_count = 0
         if total_sessions > 0:
             session_ids_q = select(Session.id).where(and_(*session_filters))
@@ -200,7 +201,7 @@ async def get_my_groups(
                 .where(
                     and_(
                         Absence.session_id.in_(session_ids_q),
-                        Absence.is_absent.is_(True),
+                        UNEXCUSED_ABSENCE,
                     )
                 )
             )
@@ -631,7 +632,7 @@ async def get_all_groups(
         if sessions_ids and student_count > 0:
             total_absences = (await db.execute(
                 select(func.count()).select_from(Absence)
-                .where(and_(Absence.session_id.in_(sessions_ids), Absence.is_absent == True))
+                .where(and_(Absence.session_id.in_(sessions_ids), UNEXCUSED_ABSENCE))
             )).scalar() or 0
             
             rate = (total_absences / (student_count * len(sessions_ids))) * 100.0

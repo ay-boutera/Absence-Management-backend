@@ -32,9 +32,12 @@ from app.schemas.justification import (
     RejectResponse,
 )
 from app.services.cloudinary_service import delete_cloudinary_file, upload_justification_pdf
+from app.services.notification_service import create_and_push, notify_admins
 
 router = APIRouter(tags=["justifications"])
 
+
+# ── Internal helpers ───────────────────────────────────────────────────────────
 
 def _build_response(item: Justification, student: AcademicStudent) -> JustificationResponse:
     return JustificationResponse(
@@ -72,6 +75,80 @@ async def _get_academic_student_from_user(db: AsyncSession, current_user: Studen
     return academic_student
 
 
+async def _mark_absences_as_justified(db: AsyncSession, justification: Justification) -> None:
+    """
+    Set statut_justificatif='justified' on every Absence covered by an approved
+    justification.  This prevents those absences from counting toward thresholds.
+    """
+    # Resolve the student's matricule from their AcademicStudent record
+    acad = (
+        await db.execute(select(AcademicStudent).where(AcademicStudent.id == justification.student_id))
+    ).scalar_one_or_none()
+    if acad is None:
+        return
+    matricule: str = acad.matricule
+
+    scope = cast(JustificationScopeType, justification.scope_type)
+
+    if scope == JustificationScopeType.ABSENCE and justification.absence_id:
+        await db.execute(
+            update(Absence)
+            .where(Absence.id == justification.absence_id)
+            .values(statut_justificatif="justified")
+        )
+
+    elif scope == JustificationScopeType.SESSION and justification.session_id:
+        await db.execute(
+            update(Absence)
+            .where(
+                and_(
+                    Absence.session_id == justification.session_id,
+                    Absence.student_matricule == matricule,
+                    Absence.is_absent.is_(True),
+                )
+            )
+            .values(statut_justificatif="justified")
+        )
+
+    elif scope == JustificationScopeType.RANGE:
+        if justification.start_date and justification.end_date:
+            session_ids_subq = (
+                select(Session.id)
+                .where(
+                    and_(
+                        Session.date >= justification.start_date,
+                        Session.date <= justification.end_date,
+                    )
+                )
+                .scalar_subquery()
+            )
+            await db.execute(
+                update(Absence)
+                .where(
+                    and_(
+                        Absence.session_id.in_(session_ids_subq),
+                        Absence.student_matricule == matricule,
+                        Absence.is_absent.is_(True),
+                    )
+                )
+                .values(statut_justificatif="justified")
+            )
+
+
+async def _get_student_user_id(db: AsyncSession, academic_student: AcademicStudent) -> UUID | None:
+    """Resolve the student_users.id for a given AcademicStudent (needed for notifications)."""
+    student_user = (
+        await db.execute(
+            select(Student).where(
+                func.lower(Student.email) == academic_student.email.lower()
+            )
+        )
+    ).scalar_one_or_none()
+    return cast(UUID, student_user.id) if student_user else None
+
+
+# ── POST /justifications ───────────────────────────────────────────────────────
+
 @router.post(
     "/justifications",
     response_model=JustificationResponse,
@@ -89,6 +166,10 @@ Conditional fields:
 - `absence_id` only for `scope_type=absence`
 - `session_id` only for `scope_type=session`
 - `start_date` + `end_date` only for `scope_type=range`
+
+**Side-effects:**
+- Stores the document on Cloudinary.
+- Sends a real-time notification to every active admin.
 """,
     responses={
         201: {"description": "Justification created"},
@@ -192,8 +273,22 @@ async def submit_justification(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message) from exc
 
     await db.refresh(justification)
+
+    # ── Notify all active admins in real time ─────────────────────────────────
+    student_name = f"{academic_student.prenom} {academic_student.nom}"
+    await notify_admins(
+        db,
+        type="justification_submitted",
+        title="Nouvelle justification soumise",
+        body=f"{student_name} a soumis une nouvelle justification.",
+        justification_id=cast(UUID, justification.id),
+    )
+
+    await db.commit()
     return _build_response(justification, academic_student)
 
+
+# ── GET /justifications/mine ───────────────────────────────────────────────────
 
 @router.get(
     "/justifications/mine",
@@ -240,6 +335,8 @@ async def list_my_justifications(
     return JustificationListResponse.from_items(total=total, page=page, page_size=page_size, data=data)
 
 
+# ── GET /justifications/mine/{justification_id} ───────────────────────────────
+
 @router.get(
     "/justifications/mine/{justification_id}",
     response_model=JustificationResponse,
@@ -267,6 +364,8 @@ async def get_my_justification(
 
     return _build_response(item, academic_student)
 
+
+# ── PATCH /justifications/mine/{justification_id} ─────────────────────────────
 
 @router.patch(
     "/justifications/mine/{justification_id}",
@@ -341,6 +440,8 @@ async def edit_my_justification(
     return _build_response(item, academic_student)
 
 
+# ── DELETE /justifications/mine/{justification_id} ────────────────────────────
+
 @router.delete(
     "/justifications/mine/{justification_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -379,6 +480,8 @@ async def delete_my_justification(
     await db.flush()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+
+# ── GET /justifications (admin) ────────────────────────────────────────────────
 
 @router.get(
     "/justifications",
@@ -448,95 +551,20 @@ async def list_all_justifications(
     return JustificationListResponse.from_items(total=total, page=page, page_size=page_size, data=data)
 
 
-@router.patch(
-    "/justifications/approve-all",
-    response_model=BulkReviewResponse,
-    summary="Bulk approve justifications",
-    description="""
-Bulk-approve pending justifications.
-- If `ids` provided: approve pending items in those ids.
-- If `ids` empty/omitted: approve all pending justifications.
-""",
-)
-async def approve_all_justifications(
-    payload: BulkApproveRequest,
-    current_user=Depends(require_role(UserRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-):
-    now = datetime.now(timezone.utc)
-    conditions = [Justification.status == JustificationStatus.PENDING]
-    if payload.ids:
-        conditions.append(Justification.id.in_(payload.ids))
-
-    stmt = (
-        update(Justification)
-        .where(and_(*conditions))
-        .values(
-            status=JustificationStatus.APPROVED,
-            rejection_reason=None,
-            reviewed_by=current_user.email,
-            reviewed_at=now,
-            updated_at=now,
-        )
-    )
-    result = await db.execute(stmt)
-
-    return BulkReviewResponse(
-        affected=result.rowcount or 0,
-        status="approved",
-        reviewed_at=now,
-        reviewed_by=current_user.email,
-    )
-
-
-@router.patch(
-    "/justifications/reject-all",
-    response_model=BulkReviewResponse,
-    summary="Bulk reject justifications",
-    description="""
-Bulk-reject pending justifications.
-- If `ids` provided: reject pending items in those ids.
-- If `ids` empty/omitted: reject all pending justifications.
-- Optional `reason` is applied to all affected rows.
-""",
-)
-async def reject_all_justifications(
-    payload: BulkRejectRequest,
-    current_user=Depends(require_role(UserRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-):
-    now = datetime.now(timezone.utc)
-    conditions = [Justification.status == JustificationStatus.PENDING]
-    if payload.ids:
-        conditions.append(Justification.id.in_(payload.ids))
-
-    stmt = (
-        update(Justification)
-        .where(and_(*conditions))
-        .values(
-            status=JustificationStatus.REJECTED,
-            rejection_reason=payload.reason,
-            reviewed_by=current_user.email,
-            reviewed_at=now,
-            updated_at=now,
-        )
-    )
-    result = await db.execute(stmt)
-
-    return BulkReviewResponse(
-        affected=result.rowcount or 0,
-        status="rejected",
-        rejection_reason=payload.reason,
-        reviewed_at=now,
-        reviewed_by=current_user.email,
-    )
-
+# ── PATCH /justifications/{id}/approve ────────────────────────────────────────
 
 @router.patch(
     "/justifications/{justification_id}/approve",
     response_model=ApproveResponse,
     summary="Approve a single justification",
-    description="Admin approves one pending justification.",
+    description="""
+Admin approves one pending justification.
+
+**Side-effects:**
+- Marks all absences covered by this justification as `justified`
+  (they will no longer count toward the absence threshold).
+- Sends a real-time notification to the student.
+""",
     responses={
         200: {"description": "Approved"},
         400: {"description": "Justification already approved or rejected"},
@@ -551,6 +579,7 @@ async def approve_justification(
     item = (await db.execute(select(Justification).where(Justification.id == justification_id))).scalar_one_or_none()
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Justification not found")
+
     item_status = cast(JustificationStatus, item.status)
     if item_status != JustificationStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Justification already approved or rejected")
@@ -565,14 +594,40 @@ async def approve_justification(
     db.add(item_mut)
     await db.flush()
 
+    # ── Mark covered absences as justified ────────────────────────────────────
+    await _mark_absences_as_justified(db, item)
+
+    # ── Notify the student ────────────────────────────────────────────────────
+    acad = (await db.execute(select(AcademicStudent).where(AcademicStudent.id == item.student_id))).scalar_one_or_none()
+    if acad:
+        student_user_id = await _get_student_user_id(db, acad)
+        if student_user_id:
+            await create_and_push(
+                db,
+                recipient_id=student_user_id,
+                recipient_role="student",
+                type="justification_approved",
+                title="Justification approuvée ✓",
+                body="Votre justification a été approuvée. Les absences correspondantes ne comptent plus dans votre total.",
+                justification_id=cast(UUID, item.id),
+            )
+
+    await db.commit()
     return ApproveResponse(id=cast(UUID, item.id), reviewed_at=now, reviewed_by=current_user.email)
 
+
+# ── PATCH /justifications/{id}/reject ─────────────────────────────────────────
 
 @router.patch(
     "/justifications/{justification_id}/reject",
     response_model=RejectResponse,
     summary="Reject a single justification",
-    description="Admin rejects one pending justification with optional rejection reason.",
+    description="""
+Admin rejects one pending justification.
+
+**Side-effects:**
+- Sends a real-time notification to the student with the optional rejection reason.
+""",
     responses={
         200: {"description": "Rejected"},
         400: {"description": "Justification already approved or rejected"},
@@ -588,6 +643,7 @@ async def reject_justification(
     item = (await db.execute(select(Justification).where(Justification.id == justification_id))).scalar_one_or_none()
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Justification not found")
+
     item_status = cast(JustificationStatus, item.status)
     if item_status != JustificationStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Justification already approved or rejected")
@@ -602,6 +658,25 @@ async def reject_justification(
     db.add(item_mut)
     await db.flush()
 
+    # ── Notify the student ────────────────────────────────────────────────────
+    acad = (await db.execute(select(AcademicStudent).where(AcademicStudent.id == item.student_id))).scalar_one_or_none()
+    if acad:
+        student_user_id = await _get_student_user_id(db, acad)
+        if student_user_id:
+            body = "Votre justification a été refusée."
+            if payload.reason:
+                body += f" Motif : {payload.reason}"
+            await create_and_push(
+                db,
+                recipient_id=student_user_id,
+                recipient_role="student",
+                type="justification_rejected",
+                title="Justification refusée ✗",
+                body=body,
+                justification_id=cast(UUID, item.id),
+            )
+
+    await db.commit()
     return RejectResponse(
         id=cast(UUID, item.id),
         rejection_reason=payload.reason,
@@ -609,6 +684,153 @@ async def reject_justification(
         reviewed_by=current_user.email,
     )
 
+
+# ── PATCH /justifications/approve-all ─────────────────────────────────────────
+
+@router.patch(
+    "/justifications/approve-all",
+    response_model=BulkReviewResponse,
+    summary="Bulk approve justifications",
+    description="""
+Bulk-approve pending justifications.
+- If `ids` provided: approve pending items in those ids.
+- If `ids` empty/omitted: approve all pending justifications.
+
+**Side-effects:** same as single approve — absences marked justified + student notified.
+""",
+)
+async def approve_all_justifications(
+    payload: BulkApproveRequest,
+    current_user=Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    now = datetime.now(timezone.utc)
+    conditions = [Justification.status == JustificationStatus.PENDING]
+    if payload.ids:
+        conditions.append(Justification.id.in_(payload.ids))
+
+    # Fetch all justifications that will be approved before updating
+    to_approve = (
+        await db.execute(select(Justification).where(and_(*conditions)))
+    ).scalars().all()
+
+    if not to_approve:
+        return BulkReviewResponse(affected=0, status="approved", reviewed_at=now, reviewed_by=current_user.email)
+
+    # Bulk-update status
+    ids = [j.id for j in to_approve]
+    await db.execute(
+        update(Justification)
+        .where(Justification.id.in_(ids))
+        .values(
+            status=JustificationStatus.APPROVED,
+            rejection_reason=None,
+            reviewed_by=current_user.email,
+            reviewed_at=now,
+            updated_at=now,
+        )
+    )
+
+    # Mark absences + notify each student
+    for j in to_approve:
+        await _mark_absences_as_justified(db, j)
+
+        acad = (await db.execute(select(AcademicStudent).where(AcademicStudent.id == j.student_id))).scalar_one_or_none()
+        if acad:
+            student_user_id = await _get_student_user_id(db, acad)
+            if student_user_id:
+                await create_and_push(
+                    db,
+                    recipient_id=student_user_id,
+                    recipient_role="student",
+                    type="justification_approved",
+                    title="Justification approuvée ✓",
+                    body="Votre justification a été approuvée. Les absences correspondantes ne comptent plus dans votre total.",
+                    justification_id=cast(UUID, j.id),
+                )
+
+    await db.commit()
+    return BulkReviewResponse(
+        affected=len(to_approve),
+        status="approved",
+        reviewed_at=now,
+        reviewed_by=current_user.email,
+    )
+
+
+# ── PATCH /justifications/reject-all ──────────────────────────────────────────
+
+@router.patch(
+    "/justifications/reject-all",
+    response_model=BulkReviewResponse,
+    summary="Bulk reject justifications",
+    description="""
+Bulk-reject pending justifications.
+- If `ids` provided: reject pending items in those ids.
+- If `ids` empty/omitted: reject all pending justifications.
+- Optional `reason` is applied to all affected rows.
+
+**Side-effects:** same as single reject — student notified for each rejected item.
+""",
+)
+async def reject_all_justifications(
+    payload: BulkRejectRequest,
+    current_user=Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    now = datetime.now(timezone.utc)
+    conditions = [Justification.status == JustificationStatus.PENDING]
+    if payload.ids:
+        conditions.append(Justification.id.in_(payload.ids))
+
+    to_reject = (
+        await db.execute(select(Justification).where(and_(*conditions)))
+    ).scalars().all()
+
+    if not to_reject:
+        return BulkReviewResponse(affected=0, status="rejected", reviewed_at=now, reviewed_by=current_user.email)
+
+    ids = [j.id for j in to_reject]
+    await db.execute(
+        update(Justification)
+        .where(Justification.id.in_(ids))
+        .values(
+            status=JustificationStatus.REJECTED,
+            rejection_reason=payload.reason,
+            reviewed_by=current_user.email,
+            reviewed_at=now,
+            updated_at=now,
+        )
+    )
+
+    # Notify each student
+    body_suffix = f" Motif : {payload.reason}" if payload.reason else ""
+    for j in to_reject:
+        acad = (await db.execute(select(AcademicStudent).where(AcademicStudent.id == j.student_id))).scalar_one_or_none()
+        if acad:
+            student_user_id = await _get_student_user_id(db, acad)
+            if student_user_id:
+                await create_and_push(
+                    db,
+                    recipient_id=student_user_id,
+                    recipient_role="student",
+                    type="justification_rejected",
+                    title="Justification refusée ✗",
+                    body=f"Votre justification a été refusée.{body_suffix}",
+                    justification_id=cast(UUID, j.id),
+                )
+
+    await db.commit()
+    return BulkReviewResponse(
+        affected=len(to_reject),
+        status="rejected",
+        rejection_reason=payload.reason,
+        reviewed_at=now,
+        reviewed_by=current_user.email,
+    )
+
+
+# ── GET /justifications/{id}/document ─────────────────────────────────────────
 
 @router.get(
     "/justifications/{justification_id}/document",

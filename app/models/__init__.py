@@ -1,4 +1,6 @@
 from app.config import UserRole
+from app.models.settings import AdministrationSettings
+from app.models.notification import Notification
 from app.config.enums import (
     AbsenceSourceEnum,
     AcademicYear,
@@ -27,6 +29,10 @@ from .salle import Salle
 from .session import Session, SessionAttendanceSummary, session_groups, session_students
 
 __all__ = [
+    # Configuration
+    "AdministrationSettings",
+    "Notification",
+
     # Shared role models
     "PasswordResetToken",
     "UserRole",

@@ -29,12 +29,16 @@ from app.db import engine
 from app.routers import (
     absences,
     auth,
+    dashboard,
     exports,
     groups,
     justifications,
     schedule,
     sessions,
 )
+from app.routers.settings import router as settings_router
+from app.routers.teacher_dashboard import router as teacher_dashboard_router
+from app.routers.notifications import router as notifications_router
 from app.routers.accounts import router as accounts_router
 from app.routers.imports import router as imports_router
 from app.routers.students import router as students_router
@@ -53,6 +57,8 @@ CRITICAL_TABLES = (
     "import_export_logs",
     "sessions",
     "absences",
+    "administration_settings",
+    "notifications",
 )
 
 
@@ -172,7 +178,11 @@ app.middleware("http")(security_headers)
 
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-app.include_router(auth.router,       prefix="/api/v1")
+app.include_router(auth.router,            prefix="/api/v1")
+app.include_router(dashboard.router,       prefix="/api/v1")  # /dashboard/*
+app.include_router(settings_router,          prefix="/api/v1")  # /settings/*
+app.include_router(teacher_dashboard_router, prefix="/api/v1")  # /teacher/dashboard/*
+app.include_router(notifications_router,     prefix="/api/v1")  # /notifications/* + /ws/notifications
 app.include_router(accounts_router,   prefix="/api/v1")  # /accounts/*
 app.include_router(imports_router,    prefix="/api/v1")  # /import/*
 app.include_router(exports.router,    prefix="/api/v1")  # /export/*

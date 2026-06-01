@@ -11,24 +11,29 @@ PATCH /api/v1/absences/corrections/{id}  Admin review (approve / reject).
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.enums import AbsenceSourceEnum, CorrectionStatusEnum
 from app.db import get_db
+from app.helpers.absence import UNEXCUSED_ABSENCE
 from app.helpers.permissions import get_current_user_bearer, require_role
 from app.models import (
     Absence,
     AbsenceCorrection,
+    Module,
     Session,
     Teacher,
     UserRole,
 )
+from app.models.student import AcademicStudent, Student
+from app.routers.settings import get_settings
 from app.schemas.absence import (
     AbsenceCreate,
     AbsenceOut,
@@ -37,10 +42,110 @@ from app.schemas.absence import (
     CorrectionOut,
     CorrectionReview,
 )
+from app.services.notification_service import create_and_push
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Absences"])
 
 _FREE_WINDOW_MINUTES = 15
+
+
+# ── Threshold notification helper ──────────────────────────────────────────────
+
+async def _maybe_send_threshold_notification(
+    db: AsyncSession,
+    student_matricule: str,
+    session_id: UUID,
+) -> None:
+    """
+    After an absence is recorded, count the student's unexcused absences in the
+    corresponding module.  Fire a notification when the count hits exactly
+    warning_threshold (e.g. 3) or max_absences (e.g. 5).
+
+    Notifications are only sent once per threshold crossing — the exact-match
+    check means they won't re-fire on every subsequent absence.
+    """
+    # Load the session to get its module
+    session_row = (
+        await db.execute(select(Session).where(Session.id == session_id))
+    ).scalar_one_or_none()
+    if session_row is None:
+        return
+
+    module = (
+        await db.execute(select(Module).where(Module.id == session_row.module_id))
+    ).scalar_one_or_none()
+    module_name = module.nom if module else "module inconnu"
+
+    # Count unexcused absences for this student in this module
+    unexcused_count: int = (
+        await db.execute(
+            select(func.count())
+            .select_from(Absence)
+            .join(Session, Absence.session_id == Session.id)
+            .where(
+                and_(
+                    Absence.student_matricule == student_matricule,
+                    Session.module_id == session_row.module_id,
+                    UNEXCUSED_ABSENCE,
+                )
+            )
+        )
+    ).scalar() or 0
+
+    settings = await get_settings(db)
+
+    if unexcused_count not in (settings.warning_threshold, settings.max_absences):
+        return  # Not at a threshold boundary — nothing to send
+
+    # Resolve the student's login account via email
+    acad_student = (
+        await db.execute(
+            select(AcademicStudent).where(AcademicStudent.matricule == student_matricule)
+        )
+    ).scalar_one_or_none()
+    if acad_student is None:
+        return
+
+    student_user = (
+        await db.execute(
+            select(Student).where(
+                Student.email == acad_student.email,
+                Student.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if student_user is None:
+        return
+
+    if unexcused_count == settings.warning_threshold:
+        await create_and_push(
+            db,
+            recipient_id=student_user.id,
+            recipient_role="student",
+            type="absence_warning",
+            title="Avertissement d'absence",
+            body=(
+                f"Vous avez atteint {unexcused_count} absence(s) non justifiée(s) "
+                f"dans le module {module_name}. "
+                f"Veuillez régulariser votre situation."
+            ),
+            module_name=module_name,
+        )
+    else:  # == max_absences
+        await create_and_push(
+            db,
+            recipient_id=student_user.id,
+            recipient_role="student",
+            type="absence_exclusion",
+            title="Exclusion – Absences dépassées",
+            body=(
+                f"Vous avez atteint {unexcused_count} absences non justifiées "
+                f"dans le module {module_name}. "
+                f"Présentez-vous à l'administration pour régulariser votre situation."
+            ),
+            module_name=module_name,
+        )
 
 
 def _within_free_window(session: Session) -> bool:
@@ -109,6 +214,10 @@ async def upsert_absence(
 
     await db.flush()
     await db.refresh(absence)
+
+    # Fire threshold notifications if the student is now marked absent
+    if absence.is_absent:
+        await _maybe_send_threshold_notification(db, data.student_matricule, data.session_id)
 
     return AbsenceUpsertResponse(
         id=absence.id,
