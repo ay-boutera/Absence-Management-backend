@@ -95,6 +95,7 @@ class AcademicStudent(Base):
     )
 
     absences = relationship("Absence", back_populates="student")
+    compensation_requests = relationship("CompensationRequest", back_populates="student")
 
 
 # Aliases kept for backward compatibility if referenced elsewhere

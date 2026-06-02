@@ -4,6 +4,7 @@ from app.models.notification import Notification
 from app.config.enums import (
     AbsenceSourceEnum,
     AcademicYear,
+    CompensationRequestStatus,
     CorrectionStatusEnum,
     ImportExportAction,
     ImportExportDataType,
@@ -27,6 +28,7 @@ from .justification import Justification
 from .planning_session import PlanningSession
 from .salle import Salle
 from .session import Session, SessionAttendanceSummary, session_groups, session_students
+from .compensation_request import CompensationRequest
 
 __all__ = [
     # Configuration
@@ -58,12 +60,14 @@ __all__ = [
     "session_students",
     "Absence",
     "AbsenceCorrection",
+    "CompensationRequest",
     "ImportHistory",
     "ImportExportLog",
 
     # Enums
     "AbsenceSourceEnum",
     "AcademicYear",
+    "CompensationRequestStatus",
     "CorrectionStatusEnum",
     "ImportExportAction",
     "ImportExportDataType",

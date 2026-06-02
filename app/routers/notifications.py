@@ -32,13 +32,14 @@ from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.helpers.permissions import get_current_user, require_active_user
+from app.helpers.permissions import get_current_user, get_current_user_bearer, require_active_user
 from app.helpers.role_users import user_role
 from app.config.enums import UserRole
 from app.helpers.security import decode_token
 from app.models.notification import Notification
 from app.models.admin import Admin
 from app.models.student import Student
+from app.models.teacher import Teacher
 from app.db import engine
 from app.services.notification_service import manager
 
@@ -122,6 +123,10 @@ async def notifications_ws(
         if role_str == UserRole.ADMIN:
             user = (await db.execute(
                 select(Admin).where(Admin.id == UUID(user_id_str), Admin.is_active == True)
+            )).scalar_one_or_none()
+        elif role_str == UserRole.TEACHER:
+            user = (await db.execute(
+                select(Teacher).where(Teacher.id == UUID(user_id_str), Teacher.is_active == True)
             )).scalar_one_or_none()
         else:
             user = (await db.execute(

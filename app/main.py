@@ -36,6 +36,7 @@ from app.routers import (
     schedule,
     sessions,
 )
+from app.routers.compensation_requests import router as compensation_requests_router
 from app.routers.settings import router as settings_router
 from app.routers.teacher_dashboard import router as teacher_dashboard_router
 from app.routers.notifications import router as notifications_router
@@ -192,6 +193,7 @@ app.include_router(absences.router,   prefix="/api/v1")  # /absences/*
 app.include_router(students_router,   prefix="/api/v1")  # /students/*
 app.include_router(groups.router,     prefix="/api/v1")  # /teachers/my-groups/*
 app.include_router(justifications.router, prefix="/api/v1")  # /justifications/*
+app.include_router(compensation_requests_router, prefix="/api/v1")  # /compensation-requests/*
 
 
 # ── Health Checks ──────────────────────────────────────────────────────────────

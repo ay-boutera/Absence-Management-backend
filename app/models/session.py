@@ -138,6 +138,9 @@ class Session(Base):
     teacher = relationship("Teacher", back_populates="sessions")
     room = relationship("Salle", back_populates="sessions")
     absences = relationship("Absence", back_populates="session", cascade="all, delete-orphan")
+    compensation_requests = relationship(
+        "CompensationRequest", back_populates="session", cascade="all, delete-orphan"
+    )
     attendance_summary = relationship(
         "SessionAttendanceSummary",
         back_populates="session",
