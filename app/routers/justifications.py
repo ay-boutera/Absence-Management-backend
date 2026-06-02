@@ -5,6 +5,7 @@ from typing import Any, Optional, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -873,3 +874,31 @@ async def get_justification_document(
         document_name=cast(str, item.document_name),
         url=document_url,
     )
+
+
+# ── GET /justifications/{id}/document/download ────────────────────────────────
+
+@router.get(
+    "/justifications/{justification_id}/document/download",
+    summary="Download justification document",
+    description="Admin downloads the document. Redirects to a Cloudinary URL that forces the browser to save the file.",
+    responses={
+        302: {"description": "Redirect to download URL"},
+        404: {"description": "Justification or document not found"},
+    },
+)
+async def download_justification_document(
+    justification_id: UUID,
+    current_user=Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    item = (await db.execute(select(Justification).where(Justification.id == justification_id))).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Justification not found")
+    document_url = cast(Optional[str], item.document_url)
+    if not document_url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Insert fl_attachment after /upload/ so Cloudinary sends Content-Disposition: attachment
+    download_url = document_url.replace("/upload/", "/upload/fl_attachment/", 1)
+    return RedirectResponse(url=download_url, status_code=302)
