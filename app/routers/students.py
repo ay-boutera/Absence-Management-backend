@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, cast, Any
+from typing import Any, Optional, Sequence, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -29,7 +29,7 @@ router = APIRouter(tags=["Students"])
 
 async def _justification_status_maps(
     db: AsyncSession,
-    absence_rows: list,
+    absence_rows: Sequence[Any],
 ) -> tuple[dict, dict]:
     """Return (by_absence_id, by_session_id) dicts mapping UUID → status string.
 
@@ -39,8 +39,8 @@ async def _justification_status_maps(
     if not absence_rows:
         return {}, {}
 
-    absence_ids = [row[0].id for row in absence_rows]
-    session_ids = [row[1].id for row in absence_rows]
+    absence_ids = [absence.id for absence, *_ in absence_rows]
+    session_ids = [session.id for _, session, *_ in absence_rows]
 
     rows = (
         await db.execute(
