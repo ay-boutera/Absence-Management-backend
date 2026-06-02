@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from pathlib import Path
 
 try:
     from cloudinary import config as cloudinary_config  # type: ignore[import-not-found]
@@ -61,16 +63,20 @@ async def upload_justification_document(file: UploadFile) -> dict[str, str]:
             detail="File is too large. Maximum allowed size is 5 MB",
         )
 
+    # Build an explicit public_id that always includes the file extension.
+    # Without this, Cloudinary generates a random ID with no extension when
+    # uploading raw bytes, making PDFs unopenable in the browser.
+    original_name = file.filename or "document"
+    stem = Path(original_name).stem or "document"
+    ext = Path(original_name).suffix.lower()  # ".pdf" / ".jpg" / ".png"
+    public_id = f"justifications/{stem}_{uuid.uuid4().hex[:8]}{ext}"
+
     try:
         uploaded = uploader.upload(
             content,
-            folder="justifications",
             resource_type=cloudinary_resource_type,
-            public_id=None,
+            public_id=public_id,
             overwrite=False,
-            use_filename=True,
-            unique_filename=True,
-            filename=file.filename,
         )
     except Exception as exc:
         logger.exception("Cloudinary upload failed for justification document")
@@ -82,7 +88,7 @@ async def upload_justification_document(file: UploadFile) -> dict[str, str]:
     return {
         "url": str(uploaded.get("secure_url") or uploaded.get("url") or ""),
         "public_id": str(uploaded.get("public_id") or ""),
-        "original_filename": str(file.filename or "document"),
+        "original_filename": original_name,
         "resource_type": cloudinary_resource_type,
     }
 
