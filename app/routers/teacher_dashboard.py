@@ -71,7 +71,8 @@ class ThresholdAlertItem(BaseModel):
     initials: str
     module: str
     absences: int
-    threshold: int
+    max_warning: int
+    max_absences: int
     avatar_color: str
 
 
@@ -363,7 +364,6 @@ async def get_threshold_alerts(
             continue
 
         absences = int(row.absence_count)
-        threshold = settings.warning_threshold
 
         # Color: red if exceeded exclusion limit, orange if at warning level
         avatar_color = "#E53935" if absences > settings.max_absences else "#FB8C00"
@@ -382,7 +382,8 @@ async def get_threshold_alerts(
                 initials=initials,
                 module=module.nom,
                 absences=absences,
-                threshold=threshold,
+                max_warning=settings.warning_threshold,
+                max_absences=settings.max_absences,
                 avatar_color=avatar_color,
             )
         )

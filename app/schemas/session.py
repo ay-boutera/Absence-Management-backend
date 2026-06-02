@@ -172,3 +172,19 @@ class AddStudentToSessionResponse(BaseModel):
     session_id: UUID
     student_matricule: str
     added: Literal[True] = True
+
+
+# ── PATCH /sessions/{id} ─────────────────────────────────────────────────────
+
+class SessionUpdateRequest(BaseModel):
+    salle_code: Optional[str] = Field(None, description="Room code to assign (e.g. 'D101')")
+    add_groups: Optional[list[str]] = Field(None, description="Group names to append to this session")
+    teacher_id: Optional[UUID] = Field(None, description="UUID of another teacher to reassign this session to")
+
+
+class SessionUpdateResponse(BaseModel):
+    session_id: UUID
+    salle: Optional[SalleInfo] = None
+    teacher: Optional[TeacherInfo] = None
+    groups_added: list[str] = Field(default_factory=list)
+    updated_fields: list[str] = Field(default_factory=list)

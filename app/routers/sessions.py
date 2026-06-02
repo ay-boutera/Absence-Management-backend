@@ -2,14 +2,15 @@
 routers/sessions.py — Session Endpoints
 =========================================
 
-GET  /api/v1/sessions/today              Teacher's sessions for today (US-18).
-GET  /api/v1/sessions/my-sessions        All sessions for the teacher, with filters (Feature 1.3).
-GET  /api/v1/sessions/{id}/attendance    Student list with attendance state (Feature 1.1).
-PUT  /api/v1/sessions/{id}/attendance    Bulk submit / update attendance (Feature 1.2).
-GET  /api/v1/sessions/{id}/students      Students in a session (US-26).
-GET  /api/v1/sessions/{id}/summary       Live attendance counts (US-24).
-POST /api/v1/sessions/{id}/groups        Add a group to a session (Feature 2.1).
-POST /api/v1/sessions/{id}/students      Add a student directly to a session (Feature 2.2).
+GET   /api/v1/sessions/today              Teacher's sessions for today (US-18).
+GET   /api/v1/sessions/my-sessions        All sessions for the teacher, with filters (Feature 1.3).
+GET   /api/v1/sessions/{id}/attendance    Student list with attendance state (Feature 1.1).
+PUT   /api/v1/sessions/{id}/attendance    Bulk submit / update attendance (Feature 1.2).
+GET   /api/v1/sessions/{id}/students      Students in a session (US-26).
+GET   /api/v1/sessions/{id}/summary       Live attendance counts (US-24).
+POST  /api/v1/sessions/{id}/groups        Add a group to a session (Feature 2.1).
+POST  /api/v1/sessions/{id}/students      Add a student directly to a session (Feature 2.2).
+PATCH /api/v1/sessions/{id}               Edit room, append groups, or reassign teacher.
 """
 
 from __future__ import annotations
@@ -51,11 +52,15 @@ from app.schemas.session import (
     AttendanceSummaryOut,
     MySessionListResponse,
     MySessionOut,
+    SalleInfo,
     SessionListResponse,
     SessionOut,
+    SessionUpdateRequest,
+    SessionUpdateResponse,
     StudentAttendanceOut,
     StudentAttendanceRecord,
     StudentListResponse,
+    TeacherInfo,
 )
 
 logger = logging.getLogger(__name__)
@@ -857,4 +862,81 @@ async def add_student_to_session(
     return AddStudentToSessionResponse(
         session_id=session_id,
         student_matricule=data.student_matricule,
+    )
+
+
+# ── PATCH /sessions/{id} ──────────────────────────────────────────────────────
+@router.patch(
+    "/sessions/{session_id}",
+    response_model=SessionUpdateResponse,
+    summary="Edit a session (room, extra groups, teacher reassignment)",
+    description="""
+Edit fields of an existing session. All fields are optional — omit any field to leave it unchanged.
+
+- **salle_code**: reassign the room by code (creates the room if it does not exist yet).
+- **add_groups**: append one or more groups; groups already linked to the session are silently skipped.
+- **teacher_id**: reassign the session to another teacher.
+
+**Auth:** Teacher only. The caller must own the session.
+""",
+)
+async def update_session(
+    session_id: UUID,
+    data: SessionUpdateRequest,
+    current_user=Depends(require_role(UserRole.TEACHER)),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await _get_session_or_404(db, session_id)
+    _assert_owns_session(session, current_user)
+
+    updated_fields: list[str] = []
+    groups_added: list[str] = []
+
+    if data.salle_code is not None:
+        salle = await _get_or_create_salle(db, data.salle_code)
+        session.room_id = salle.id
+        updated_fields.append("salle")
+
+    if data.add_groups:
+        for group_name in data.add_groups:
+            if session.group == group_name:
+                continue
+            existing = (
+                await db.execute(
+                    select(session_groups).where(
+                        session_groups.c.session_id == session_id,
+                        session_groups.c.group_name == group_name,
+                    )
+                )
+            ).first()
+            if existing is not None:
+                continue
+            await db.execute(
+                session_groups.insert().values(session_id=session_id, group_name=group_name)
+            )
+            groups_added.append(group_name)
+        if groups_added:
+            updated_fields.append("groups")
+
+    if data.teacher_id is not None:
+        teacher = (
+            await db.execute(select(Teacher).where(Teacher.id == data.teacher_id))
+        ).scalar_one_or_none()
+        if teacher is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Teacher '{data.teacher_id}' not found.",
+            )
+        session.teacher_id = data.teacher_id
+        updated_fields.append("teacher")
+
+    await db.flush()
+    await db.refresh(session, ["room", "teacher"])
+
+    return SessionUpdateResponse(
+        session_id=session_id,
+        salle=SalleInfo.model_validate(session.room) if session.room else None,
+        teacher=TeacherInfo.model_validate(session.teacher),
+        groups_added=groups_added,
+        updated_fields=updated_fields,
     )
