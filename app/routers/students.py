@@ -13,6 +13,7 @@ from app.config import UserRole
 from app.db import get_db
 from app.helpers.permissions import require_role
 from app.models import Absence, Session, Module, Teacher
+from app.models.justification import Justification
 from app.models.student import AcademicStudent, Student
 from app.schemas.students import (
     AbsenceHistoryItem,
@@ -24,6 +25,45 @@ from app.schemas.students import (
 )
 
 router = APIRouter(tags=["Students"])
+
+
+async def _justification_status_maps(
+    db: AsyncSession,
+    absence_rows: list,
+) -> tuple[dict, dict]:
+    """Return (by_absence_id, by_session_id) dicts mapping UUID → status string.
+
+    Covers pending/rejected justifications that never write back to
+    absence.statut_justificatif (which only reflects approved ones).
+    """
+    if not absence_rows:
+        return {}, {}
+
+    absence_ids = [row[0].id for row in absence_rows]
+    session_ids = [row[1].id for row in absence_rows]
+
+    rows = (
+        await db.execute(
+            select(Justification.absence_id, Justification.session_id, Justification.status)
+            .where(
+                or_(
+                    Justification.absence_id.in_(absence_ids),
+                    Justification.session_id.in_(session_ids),
+                )
+            )
+        )
+    ).all()
+
+    by_absence: dict = {}
+    by_session: dict = {}
+    for j_absence_id, j_session_id, j_status in rows:
+        val = j_status.value if hasattr(j_status, "value") else str(j_status)
+        if j_absence_id:
+            by_absence[j_absence_id] = val
+        if j_session_id:
+            by_session[j_session_id] = val
+
+    return by_absence, by_session
 
 
 # ── GET /students ──────────────────────────────────────────────────────────────
@@ -78,6 +118,8 @@ async def _get_student_profile_logic(
     total_sessions = total_sessions_result.scalar_one() or 0
 
     # ── 5. Build absence history ───────────────────────────────────────────────
+    just_by_absence, just_by_session = await _justification_status_maps(db, absence_rows)
+
     history: list[AbsenceHistoryItem] = []
     total_absences = 0
     cross_session_count = 0
@@ -94,6 +136,14 @@ async def _get_student_profile_logic(
         if not is_own_group:
             cross_session_count += 1
 
+        # Prefer live justification status (catches pending/rejected);
+        # fall back to statut_justificatif for approved records.
+        justification_status = (
+            just_by_absence.get(absence.id)
+            or just_by_session.get(session.id)
+            or absence.statut_justificatif
+        )
+
         history.append(
             AbsenceHistoryItem(
                 absence_id=absence.id,
@@ -104,7 +154,7 @@ async def _get_student_profile_logic(
                 module_name=module.nom if module else None,
                 teacher_name=f"{teacher.first_name} {teacher.last_name}" if teacher else None,
                 is_absent=absence.is_absent,
-                justification_status=absence.statut_justificatif,
+                justification_status=justification_status,
                 session_group=session.group,
                 is_own_group=is_own_group,
                 is_cross_session=not is_own_group,
@@ -255,6 +305,8 @@ async def _get_student_profile_from_account(
     )
     total_sessions = total_sessions_result.scalar_one() or 0
 
+    just_by_absence, just_by_session = await _justification_status_maps(db, absence_rows)
+
     history: list[AbsenceHistoryItem] = []
     total_absences = 0
     cross_session_count = 0
@@ -267,6 +319,12 @@ async def _get_student_profile_from_account(
         if not is_own_group:
             cross_session_count += 1
 
+        justification_status = (
+            just_by_absence.get(absence.id)
+            or just_by_session.get(session.id)
+            or absence.statut_justificatif
+        )
+
         history.append(
             AbsenceHistoryItem(
                 absence_id=absence.id,
@@ -277,7 +335,7 @@ async def _get_student_profile_from_account(
                 module_name=module.nom if module else None,
                 teacher_name=f"{teacher.first_name} {teacher.last_name}" if teacher else None,
                 is_absent=absence.is_absent,
-                justification_status=absence.statut_justificatif,
+                justification_status=justification_status,
                 session_group=session.group,
                 is_own_group=is_own_group,
                 is_cross_session=not is_own_group,
