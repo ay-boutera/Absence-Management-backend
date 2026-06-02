@@ -5,7 +5,6 @@ from typing import Any, Optional, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
-from fastapi.responses import RedirectResponse
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +31,7 @@ from app.schemas.justification import (
     RejectRequest,
     RejectResponse,
 )
-from app.services.cloudinary_service import delete_cloudinary_file, upload_justification_document
+from app.services.cloudinary_service import delete_cloudinary_file, stream_document, upload_justification_document
 from app.services.notification_service import create_and_push, notify_admins
 
 router = APIRouter(tags=["justifications"])
@@ -881,10 +880,15 @@ async def get_justification_document(
 @router.get(
     "/justifications/{justification_id}/document/download",
     summary="Download justification document",
-    description="Admin downloads the document. Redirects to a Cloudinary URL that forces the browser to save the file.",
+    description=(
+        "Admin downloads the justification document (PDF, JPG, or PNG). "
+        "Fetches the file via the Cloudinary management API and streams it directly — "
+        "works for both legacy (type=upload) and new (type=private) resources regardless of CDN restrictions."
+    ),
     responses={
-        302: {"description": "Redirect to download URL"},
+        200: {"description": "File streamed directly"},
         404: {"description": "Justification or document not found"},
+        502: {"description": "Failed to fetch from storage"},
     },
 )
 async def download_justification_document(
@@ -896,9 +900,15 @@ async def download_justification_document(
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Justification not found")
     document_url = cast(Optional[str], item.document_url)
-    if not document_url:
+    public_id = cast(Optional[str], item.cloudinary_public_id)
+    if not document_url or not public_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    # Insert fl_attachment after /upload/ so Cloudinary sends Content-Disposition: attachment
-    download_url = document_url.replace("/upload/", "/upload/fl_attachment/", 1)
-    return RedirectResponse(url=download_url, status_code=302)
+    file_bytes, content_type, filename = await stream_document(public_id, document_url, cast(str, item.document_name))
+
+    safe_filename = filename.replace('"', '\\"')
+    return Response(
+        content=file_bytes,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
