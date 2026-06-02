@@ -29,6 +29,7 @@ from .planning_session import PlanningSession
 from .salle import Salle
 from .session import Session, SessionAttendanceSummary, session_groups, session_students
 from .compensation_request import CompensationRequest
+from .session_nonce import SessionNonce
 
 __all__ = [
     # Configuration
@@ -61,6 +62,7 @@ __all__ = [
     "Absence",
     "AbsenceCorrection",
     "CompensationRequest",
+    "SessionNonce",
     "ImportHistory",
     "ImportExportLog",
 

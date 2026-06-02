@@ -28,6 +28,7 @@ from app.config import settings
 from app.db import engine
 from app.routers import (
     absences,
+    attendance,
     auth,
     dashboard,
     exports,
@@ -189,6 +190,7 @@ app.include_router(imports_router,    prefix="/api/v1")  # /import/*
 app.include_router(exports.router,    prefix="/api/v1")  # /export/*
 app.include_router(schedule.router,   prefix="/api/v1")  # /planning/my-schedule
 app.include_router(sessions.router,   prefix="/api/v1")  # /sessions/*
+app.include_router(attendance.router, prefix="/api/v1")  # /sessions/*/qr-code + /attendance/*
 app.include_router(absences.router,   prefix="/api/v1")  # /absences/*
 app.include_router(students_router,   prefix="/api/v1")  # /students/*
 app.include_router(groups.router,     prefix="/api/v1")  # /teachers/my-groups/*

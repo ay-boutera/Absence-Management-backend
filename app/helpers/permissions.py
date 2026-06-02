@@ -207,6 +207,17 @@ async def get_current_user_bearer(
     return user
 
 
+async def require_student_bearer(
+    current_user: RoleUser = Depends(get_current_user_bearer),
+) -> RoleUser:
+    if user_role(current_user) != UserRole.STUDENT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Student role required.",
+        )
+    return current_user
+
+
 async def require_admin_bearer(
     current_user: RoleUser = Depends(get_current_user_bearer),
 ) -> RoleUser:

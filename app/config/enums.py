@@ -101,6 +101,7 @@ class AbsenceSourceEnum(str, PyEnum):
     PWA = "PWA"
     MANUAL = "MANUAL"
     IMPORT = "IMPORT"
+    QR = "QR"
 
 
 class CorrectionStatusEnum(str, PyEnum):
