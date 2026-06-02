@@ -146,6 +146,16 @@ async def _get_student_profile_logic(
         module_scope_q = module_scope_q.where(Session.semester.in_(own_group_semesters))
 
     module_rows = (await db.execute(module_scope_q.distinct().order_by(Module.nom.asc()))).scalars().all()
+
+    semester_scope_q = (
+        select(Session.module_id, Session.semester)
+        .join(Module, Session.module_id == Module.id)
+        .where(and_(Session.year == academic.niveau, Session.semester.is_not(None)))
+    )
+    if own_group_semesters:
+        semester_scope_q = semester_scope_q.where(Session.semester.in_(own_group_semesters))
+    module_semester_map = {mid: sem for mid, sem in (await db.execute(semester_scope_q.distinct())).all()}
+
     sessions_per_module_rows = (
         await db.execute(
             select(Session.module_id, func.count(Session.id))
@@ -187,6 +197,7 @@ async def _get_student_profile_logic(
         module_attendance.append(
             ModuleAttendanceItem(
                 module_name=cast(str, module.nom),
+                semester=module_semester_map.get(module.id),
                 total_sessions=module_total_sessions,
                 absences=module_absences,
                 attendance_rate=module_rate,
@@ -304,6 +315,16 @@ async def _get_student_profile_from_account(
     module_rows = (
         await db.execute(module_scope_q.distinct().order_by(Module.nom.asc()))
     ).scalars().all()
+
+    semester_scope_q = (
+        select(Session.module_id, Session.semester)
+        .join(Module, Session.module_id == Module.id)
+        .where(and_(Session.year == student.level, Session.semester.is_not(None)))
+    )
+    if own_group_semesters:
+        semester_scope_q = semester_scope_q.where(Session.semester.in_(own_group_semesters))
+    module_semester_map = {mid: sem for mid, sem in (await db.execute(semester_scope_q.distinct())).all()}
+
     sessions_per_module_rows = (
         await db.execute(
             select(Session.module_id, func.count(Session.id))
@@ -342,6 +363,7 @@ async def _get_student_profile_from_account(
         module_attendance.append(
             ModuleAttendanceItem(
                 module_name=cast(str, module.nom),
+                semester=module_semester_map.get(module.id),
                 total_sessions=module_total_sessions,
                 absences=module_absences,
                 attendance_rate=module_rate,

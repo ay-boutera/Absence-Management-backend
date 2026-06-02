@@ -86,6 +86,7 @@ class AbsenceHistoryItem(BaseModel):
 class ModuleAttendanceItem(BaseModel):
     """Attendance summary for one module."""
     module_name: str
+    semester: Optional[str] = None
     total_sessions: int
     absences: int
     attendance_rate: Optional[float] = None
