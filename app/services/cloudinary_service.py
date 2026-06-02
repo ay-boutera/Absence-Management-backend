@@ -165,8 +165,12 @@ async def stream_document(public_id: str, document_url: str, document_name: str)
 
     if access_type == "private":
         # New-style: private_download_url goes through api.cloudinary.com — no CDN needed.
+        # Derive format from extension so image downloads include the correct file extension.
+        fmt = ext.lstrip(".") if resource_type == "image" else ""
+        if fmt == "jpeg":
+            fmt = "jpg"
         dl_url = cloudinary_utils.private_download_url(
-            public_id, "", resource_type=resource_type, type="private", attachment=True,
+            public_id, fmt, resource_type=resource_type, type="private", attachment=True,
         )
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(dl_url)
@@ -196,8 +200,10 @@ async def stream_document(public_id: str, document_url: str, document_name: str)
             if not names:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Empty archive returned from storage")
             file_bytes = zf.read(names[0])
-    except zipfile.BadZipFile as exc:
-        logger.error("Bad ZIP returned for public_id=%s", public_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to extract archive for public_id=%s: %s", public_id, exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Corrupted archive from storage") from exc
 
     return file_bytes, content_type, filename

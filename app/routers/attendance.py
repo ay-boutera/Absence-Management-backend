@@ -14,6 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.enums import AbsenceSourceEnum, UserRole
@@ -98,12 +99,23 @@ async def get_session_qr_code(
     ).scalar_one_or_none()
 
     if existing is None:
-        existing = SessionNonce(
+        new_nonce = SessionNonce(
             session_id=session_id,
             nonce=_generate_nonce(),
             expires_at=_nonce_expiry(),
         )
-        db.add(existing)
+        try:
+            async with db.begin_nested():
+                db.add(new_nonce)
+        except IntegrityError:
+            # Concurrent request already created the nonce — fetch it
+            existing = (
+                await db.execute(
+                    select(SessionNonce).where(SessionNonce.session_id == session_id)
+                )
+            ).scalar_one()
+        else:
+            existing = new_nonce
     else:
         # Normalise tzinfo before comparing
         expires_at = existing.expires_at
@@ -112,7 +124,6 @@ async def get_session_qr_code(
         if expires_at <= now:
             existing.nonce = _generate_nonce()
             existing.expires_at = _nonce_expiry()
-            db.add(existing)
 
     await db.flush()
 
@@ -215,21 +226,37 @@ async def mark_present(
     ).scalar_one_or_none()
 
     if existing_absence is None:
-        db.add(
-            Absence(
-                session_id=data.session_id,
-                student_matricule=academic_student.matricule,
-                recorded_by=None,
-                is_absent=False,
-                source=AbsenceSourceEnum.QR,
-                synced_at=now,
-            )
-        )
+        try:
+            async with db.begin_nested():
+                db.add(
+                    Absence(
+                        session_id=data.session_id,
+                        student_matricule=academic_student.matricule,
+                        recorded_by=None,
+                        is_absent=False,
+                        source=AbsenceSourceEnum.QR,
+                        synced_at=now,
+                    )
+                )
+        except IntegrityError:
+            # Concurrent scan already recorded attendance — update the existing row
+            existing_absence = (
+                await db.execute(
+                    select(Absence).where(
+                        and_(
+                            Absence.session_id == data.session_id,
+                            Absence.student_matricule == academic_student.matricule,
+                        )
+                    )
+                )
+            ).scalar_one()
+            existing_absence.is_absent = False
+            existing_absence.source = AbsenceSourceEnum.QR
+            existing_absence.synced_at = now
     else:
         existing_absence.is_absent = False
         existing_absence.source = AbsenceSourceEnum.QR
         existing_absence.synced_at = now
-        db.add(existing_absence)
 
     await db.flush()
 

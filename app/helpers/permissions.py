@@ -209,12 +209,25 @@ async def get_current_user_bearer(
 
 async def require_student_bearer(
     current_user: RoleUser = Depends(get_current_user_bearer),
+    db: AsyncSession = Depends(get_db),
 ) -> RoleUser:
     if user_role(current_user) != UserRole.STUDENT:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Student role required.",
         )
+    if current_user.last_activity:
+        inactivity_limit = timedelta(minutes=settings.SESSION_INACTIVITY_MINUTES)
+        last_activity = current_user.last_activity
+        if last_activity.tzinfo is None:
+            last_activity = last_activity.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - last_activity > inactivity_limit:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session expired due to inactivity. Please log in again.",
+            )
+    current_user.last_activity = datetime.now(timezone.utc)
+    db.add(current_user)
     return current_user
 
 
