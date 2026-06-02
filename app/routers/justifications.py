@@ -86,18 +86,18 @@ async def _mark_absences_as_justified(db: AsyncSession, justification: Justifica
     ).scalar_one_or_none()
     if acad is None:
         return
-    matricule: str = acad.matricule
+    matricule: str = cast(str, acad.matricule)
 
     scope = cast(JustificationScopeType, justification.scope_type)
 
-    if scope == JustificationScopeType.ABSENCE and justification.absence_id:
+    if scope == JustificationScopeType.ABSENCE and cast(Optional[UUID], justification.absence_id):
         await db.execute(
             update(Absence)
             .where(Absence.id == justification.absence_id)
             .values(statut_justificatif="justified")
         )
 
-    elif scope == JustificationScopeType.SESSION and justification.session_id:
+    elif scope == JustificationScopeType.SESSION and cast(Optional[UUID], justification.session_id):
         await db.execute(
             update(Absence)
             .where(
@@ -111,7 +111,7 @@ async def _mark_absences_as_justified(db: AsyncSession, justification: Justifica
         )
 
     elif scope == JustificationScopeType.RANGE:
-        if justification.start_date and justification.end_date:
+        if cast(Optional[date], justification.start_date) and cast(Optional[date], justification.end_date):
             session_ids_subq = (
                 select(Session.id)
                 .where(
@@ -180,21 +180,37 @@ Conditional fields:
 )
 async def submit_justification(
     scope_type: JustificationScopeType = Form(...),
-    absence_id: Optional[UUID] = Form(default=None),
-    session_id: Optional[UUID] = Form(default=None),
-    start_date: Optional[date] = Form(default=None),
-    end_date: Optional[date] = Form(default=None),
+    absence_id: Optional[str] = Form(default=None),
+    session_id: Optional[str] = Form(default=None),
+    start_date: Optional[str] = Form(default=None),
+    end_date: Optional[str] = Form(default=None),
     reason: str = Form(...),
     document: UploadFile = File(...),
     current_user=Depends(require_role(UserRole.STUDENT)),
     db: AsyncSession = Depends(get_db),
 ):
+    def _uuid(v: Optional[str]) -> Optional[UUID]:
+        if not v:
+            return None
+        try:
+            return UUID(v)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid UUID: {v!r}")
+
+    def _date(v: Optional[str]) -> Optional[date]:
+        if not v:
+            return None
+        try:
+            return date.fromisoformat(v)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid date: {v!r}")
+
     payload = JustificationSubmitRequest(
         scope_type=scope_type,
-        absence_id=absence_id,
-        session_id=session_id,
-        start_date=start_date,
-        end_date=end_date,
+        absence_id=_uuid(absence_id),
+        session_id=_uuid(session_id),
+        start_date=_date(start_date),
+        end_date=_date(end_date),
         reason=reason,
     )
 
