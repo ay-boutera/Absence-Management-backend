@@ -760,7 +760,7 @@ async def approve_all_justifications(
                     recipient_role="student",
                     type="justification_approved",
                     title="Justification approuvée ✓",
-                    body="Votre justification a été approuvée. Les absences correspondantes ne comptent plus dans votre total.",
+                    body="Votre justification a été approuvée.",
                     justification_id=cast(UUID, j.id),
                 )
 
