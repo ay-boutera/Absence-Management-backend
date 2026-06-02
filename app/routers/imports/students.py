@@ -134,7 +134,9 @@ async def import_students_csv(
     emails = [row["email"] for _, row in parsed_rows if row["email"]]
 
     academic_result = await db.execute(select(AcademicStudent).where(AcademicStudent.matricule.in_(matricules)))
-    existing_matricules = {s.matricule for s in academic_result.scalars().all()}
+    existing_academics_list = academic_result.scalars().all()
+    existing_matricules = {s.matricule for s in existing_academics_list}
+    academic_by_matricule = {s.matricule: s for s in existing_academics_list}
 
     profiles_result = await db.execute(select(StudentProfile).where(StudentProfile.student_id.in_(matricules)))
     profiles_by_id = {p.student_id: p for p in profiles_result.scalars().all()}
@@ -179,7 +181,7 @@ async def import_students_csv(
             {
                 "row": row,
                 "student_profile": profile,
-                "existing_academic": next((a for a in academic_result.scalars().all() if a.matricule == matricule), None)
+                "existing_academic": academic_by_matricule.get(matricule),
             }
         )
 
