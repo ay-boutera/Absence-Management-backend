@@ -14,7 +14,14 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-MAX_PDF_SIZE_BYTES = 5 * 1024 * 1024
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+# MIME type → Cloudinary resource_type
+_ALLOWED_TYPES: dict[str, str] = {
+    "application/pdf": "raw",
+    "image/jpeg": "image",
+    "image/png": "image",
+}
 
 
 def configure_cloudinary() -> None:
@@ -28,30 +35,37 @@ def configure_cloudinary() -> None:
     )
 
 
-async def upload_justification_pdf(file: UploadFile) -> dict[str, str]:
+async def upload_justification_document(file: UploadFile) -> dict[str, str]:
+    """Upload a justification document (PDF, JPG, or PNG) to Cloudinary.
+
+    Returns: url, public_id, original_filename, resource_type
+    """
     if uploader is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Cloudinary integration is not available",
         )
-    if file.content_type != "application/pdf":
+
+    content_type = (file.content_type or "").lower()
+    cloudinary_resource_type = _ALLOWED_TYPES.get(content_type)
+    if cloudinary_resource_type is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are accepted (max 5 MB)",
+            detail="Only PDF, JPG, and PNG files are accepted (max 5 MB)",
         )
 
     content = await file.read()
-    if len(content) > MAX_PDF_SIZE_BYTES:
+    if len(content) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are accepted (max 5 MB)",
+            detail="File is too large. Maximum allowed size is 5 MB",
         )
 
     try:
         uploaded = uploader.upload(
             content,
             folder="justifications",
-            resource_type="raw",
+            resource_type=cloudinary_resource_type,
             public_id=None,
             overwrite=False,
             use_filename=True,
@@ -68,8 +82,13 @@ async def upload_justification_pdf(file: UploadFile) -> dict[str, str]:
     return {
         "url": str(uploaded.get("secure_url") or uploaded.get("url") or ""),
         "public_id": str(uploaded.get("public_id") or ""),
-        "original_filename": str(file.filename or "document.pdf"),
+        "original_filename": str(file.filename or "document"),
+        "resource_type": cloudinary_resource_type,
     }
+
+
+# Keep the old name as an alias so nothing outside this module breaks
+upload_justification_pdf = upload_justification_document
 
 
 def delete_cloudinary_file(public_id: str) -> None:
@@ -79,7 +98,11 @@ def delete_cloudinary_file(public_id: str) -> None:
         logger.error("Cloudinary deletion skipped because cloudinary package is unavailable")
         return
 
-    try:
-        uploader.destroy(public_id, resource_type="raw", invalidate=True)
-    except Exception:
-        logger.exception("Cloudinary deletion failed for public_id=%s", public_id)
+    # Try both resource types: existing PDFs are "raw", new images are "image"
+    for resource_type in ("raw", "image"):
+        try:
+            result = uploader.destroy(public_id, resource_type=resource_type, invalidate=True)
+            if result.get("result") == "ok":
+                return
+        except Exception:
+            logger.debug("Cloudinary destroy failed for public_id=%s resource_type=%s", public_id, resource_type)

@@ -31,7 +31,7 @@ from app.schemas.justification import (
     RejectRequest,
     RejectResponse,
 )
-from app.services.cloudinary_service import delete_cloudinary_file, upload_justification_pdf
+from app.services.cloudinary_service import delete_cloudinary_file, upload_justification_document
 from app.services.notification_service import create_and_push, notify_admins
 
 router = APIRouter(tags=["justifications"])
@@ -160,7 +160,7 @@ Student submits a justification with multipart/form-data.
 Required:
 - `scope_type`: `absence` | `session` | `range`
 - `reason`: max 500 chars
-- `document`: PDF, max 5 MB
+- `document`: PDF, JPG, or PNG, max 5 MB
 
 Conditional fields:
 - `absence_id` only for `scope_type=absence`
@@ -260,7 +260,7 @@ async def submit_justification(
                 detail="A justification already exists overlapping this date range",
             )
 
-    uploaded = await upload_justification_pdf(document)
+    uploaded = await upload_justification_document(document)
 
     justification = Justification(
         student_id=academic_student.id,
@@ -390,7 +390,7 @@ async def get_my_justification(
     description="""
 Edit only pending justification fields:
 - optional `reason`
-- optional replacement `document` (PDF max 5 MB)
+- optional replacement `document` (PDF, JPG, or PNG, max 5 MB)
 
 At least one of reason or document must be provided.
 """,
@@ -441,7 +441,7 @@ async def edit_my_justification(
         item_mut.reason = reason
 
     if document is not None:
-        uploaded = await upload_justification_pdf(document)
+        uploaded = await upload_justification_document(document)
         old_public_id = cast(str, item_mut.cloudinary_public_id)
         item_mut.document_url = uploaded["url"]
         item_mut.document_name = uploaded["original_filename"]
