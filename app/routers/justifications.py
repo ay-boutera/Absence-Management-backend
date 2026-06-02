@@ -577,9 +577,8 @@ async def list_all_justifications(
 Admin approves one pending justification.
 
 **Side-effects:**
-- Marks all absences covered by this justification as `justified`
-  (they will no longer count toward the absence threshold).
 - Sends a real-time notification to the student.
+- Note: absences always count toward the threshold regardless of justification status.
 """,
     responses={
         200: {"description": "Approved"},
@@ -712,7 +711,7 @@ Bulk-approve pending justifications.
 - If `ids` provided: approve pending items in those ids.
 - If `ids` empty/omitted: approve all pending justifications.
 
-**Side-effects:** same as single approve — absences marked justified + student notified.
+**Side-effects:** student notified for each approved justification.
 """,
 )
 async def approve_all_justifications(
