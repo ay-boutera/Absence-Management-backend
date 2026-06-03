@@ -311,10 +311,10 @@ async def list_available_sessions_for_compensation(
     if not teacher_ids:
         return AvailableCompensationSessionsResponse(data=[], total=0)
 
-    # Current week: Monday to Sunday
+    # Current week: Sunday to Saturday
     today = date.today()
-    monday = today - timedelta(days=today.weekday())
-    sunday = monday + timedelta(days=6)
+    sunday_start = today - timedelta(days=(today.weekday() + 1) % 7)
+    saturday_end = sunday_start + timedelta(days=6)
 
     # Materialize sessions for all involved teachers for the entire week
     # so they are available to be selected for compensation.
@@ -327,7 +327,7 @@ async def list_available_sessions_for_compensation(
     async with db.begin_nested():
         for t in teachers:
             for i in range(7):
-                current_day = monday + timedelta(days=i)
+                current_day = sunday_start + timedelta(days=i)
                 await materialise_sessions_for_teacher(db, t, current_day)
 
     sessions = (
@@ -342,8 +342,8 @@ async def list_available_sessions_for_compensation(
                 and_(
                     Session.module_id == module_id,
                     Session.teacher_id.in_(teacher_ids),
-                    Session.date >= monday,
-                    Session.date <= sunday,
+                    Session.date >= sunday_start,
+                    Session.date <= saturday_end,
                 )
             )
             .order_by(Session.date, Session.start_time)
