@@ -13,6 +13,14 @@ class CompensationRequestCreate(BaseModel):
     reason: str = Field(..., min_length=1, max_length=1000)
 
 
+class StudentModule(BaseModel):
+    id: UUID
+    code: str
+    nom: str
+
+    model_config = {"from_attributes": True}
+
+
 class AvailableCompensationSession(BaseModel):
     session_id: UUID
     date: date

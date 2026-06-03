@@ -45,6 +45,7 @@ from app.schemas.compensation_request import (
     CompensationRequestOut,
     CompensationRequestRejectBody,
     CompensationRequestRejectOut,
+    StudentModule,
 )
 from app.services.notification_service import create_and_push
 
@@ -149,6 +150,63 @@ async def _notify_student(
     )
 
 
+# ── GET /compensation-requests/my-modules ─────────────────────────────────────
+
+@router.get(
+    "/compensation-requests/my-modules",
+    response_model=list[StudentModule],
+    summary="List the student's modules (for compensation module picker)",
+    description="""
+Returns all modules that have sessions for the student's group.
+Use the `id` from this list as `module_id` in the **available-sessions** endpoint.
+
+**Auth:** Student only (JWT).
+""",
+)
+async def list_my_modules(
+    current_user=Depends(require_role(UserRole.STUDENT)),
+    db: AsyncSession = Depends(get_db),
+):
+    student_matricule: str = current_user.student_id
+
+    academic_student = (
+        await db.execute(
+            select(AcademicStudent).where(AcademicStudent.matricule == student_matricule)
+        )
+    ).scalar_one_or_none()
+    if academic_student is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your academic profile was not found in the system.",
+        )
+
+    student_group = academic_student.groupe.lower().strip()
+
+    module_ids = (
+        await db.execute(
+            select(Session.module_id).distinct()
+            .outerjoin(session_groups, session_groups.c.session_id == Session.id)
+            .where(
+                or_(
+                    func.lower(func.trim(Session.group)) == student_group,
+                    func.lower(func.trim(session_groups.c.group_name)) == student_group,
+                )
+            )
+        )
+    ).scalars().all()
+
+    if not module_ids:
+        return []
+
+    modules = (
+        await db.execute(
+            select(Module).where(Module.id.in_(module_ids)).order_by(Module.nom)
+        )
+    ).scalars().all()
+
+    return [StudentModule(id=m.id, code=m.code, nom=m.nom) for m in modules]
+
+
 # ── GET /compensation-requests/available-sessions ─────────────────────────────
 
 @router.get(
@@ -159,31 +217,20 @@ async def _notify_student(
 Returns all sessions for the selected module in the **current week (Mon–Sun)**,
 taught by the same teacher who teaches the student's group for that module.
 
+Call **my-modules** first to get the correct `module_id`.
+
 **Query params:**
-- `module_name` (required) — the module name (e.g. "Algorithmique")
+- `module_id` (required) — the module UUID from `/my-modules`
 
 **Auth:** Student only (JWT).
 """,
 )
 async def list_available_sessions_for_compensation(
-    module_name: str = Query(...),
+    module_id: UUID = Query(...),
     current_user=Depends(require_role(UserRole.STUDENT)),
     db: AsyncSession = Depends(get_db),
 ):
     student_matricule: str = current_user.student_id
-
-    # Resolve module by name (case-insensitive)
-    module = (
-        await db.execute(
-            select(Module).where(func.lower(func.trim(Module.nom)) == module_name.lower().strip())
-        )
-    ).scalar_one_or_none()
-    if module is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Module '{module_name}' not found.",
-        )
-    module_id = module.id
 
     academic_student = (
         await db.execute(
