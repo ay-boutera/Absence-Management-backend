@@ -316,6 +316,20 @@ async def list_available_sessions_for_compensation(
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
 
+    # Materialize sessions for all involved teachers for the entire week
+    # so they are available to be selected for compensation.
+    from app.services.session_service import materialise_sessions_for_teacher
+    teachers = (
+        await db.execute(select(Teacher).where(Teacher.id.in_(teacher_ids)))
+    ).scalars().all()
+    
+    # We do this in a nested transaction just in case, though it should be safe
+    async with db.begin_nested():
+        for t in teachers:
+            for i in range(7):
+                current_day = monday + timedelta(days=i)
+                await materialise_sessions_for_teacher(db, t, current_day)
+
     sessions = (
         await db.execute(
             select(Session)
