@@ -14,6 +14,8 @@ from app.schemas import (
     StudentAccountUpdate,
 )
 from app.schemas.students import StudentAttendanceListOut
+from app.models.student import AcademicStudent
+from app.config.constants import WARNING_ABSENCE_THRESHOLD
 from app.services.auth_service import AuthService
 from sqlalchemy import select, func, and_, or_
 from app.models import Absence
@@ -116,21 +118,43 @@ async def get_students(
 
     rows = (await db.execute(base_q)).all()
 
-    items = [
-        StudentAttendanceListOut(
-            account_id=student.id,
-            student_id=student.student_id,
-            full_name=f"{student.last_name} {student.first_name}",
-            email=student.email,
-            avatar_url=student.avatar_url,
-            level=student.level,
-            group=student.group or "",
-            total_absences=total_absences,
-            status="normal" if student.is_active else "bloque",
-            is_active=student.is_active,
+    items = []
+    for student, total_absences in rows:
+        # Try to fetch corresponding academic record to prefer its status when available
+        academic_status = None
+        try:
+            academic = (
+                await db.execute(
+                    select(AcademicStudent).where(AcademicStudent.matricule == student.student_id)
+                )
+            ).scalar_one_or_none()
+            if academic is not None:
+                academic_status = (academic.status or "").lower()
+        except Exception:
+            academic_status = None
+
+        # Priority: academic status if present -> warning if absences exceed threshold -> account active flag
+        if academic_status:
+            status_value = academic_status
+        elif (total_absences or 0) >= WARNING_ABSENCE_THRESHOLD:
+            status_value = "warning"
+        else:
+            status_value = "normal" if student.is_active else "exclu"
+
+        items.append(
+            StudentAttendanceListOut(
+                account_id=student.id,
+                student_id=student.student_id,
+                full_name=f"{student.last_name} {student.first_name}",
+                email=student.email,
+                avatar_url=student.avatar_url,
+                level=student.level,
+                group=student.group or "",
+                total_absences=total_absences,
+                status=status_value,
+                is_active=student.is_active,
+            )
         )
-        for student, total_absences in rows
-    ]
 
     return items
 
