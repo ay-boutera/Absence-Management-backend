@@ -160,17 +160,30 @@ Returns all sessions for the selected module in the **current week (Mon–Sun)**
 taught by the same teacher who teaches the student's group for that module.
 
 **Query params:**
-- `module_id` (required) — the module UUID
+- `module_name` (required) — the module name (e.g. "Algorithmique")
 
 **Auth:** Student only (JWT).
 """,
 )
 async def list_available_sessions_for_compensation(
-    module_id: UUID = Query(...),
+    module_name: str = Query(...),
     current_user=Depends(require_role(UserRole.STUDENT)),
     db: AsyncSession = Depends(get_db),
 ):
     student_matricule: str = current_user.student_id
+
+    # Resolve module by name (case-insensitive)
+    module = (
+        await db.execute(
+            select(Module).where(func.lower(func.trim(Module.nom)) == module_name.lower().strip())
+        )
+    ).scalar_one_or_none()
+    if module is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Module '{module_name}' not found.",
+        )
+    module_id = module.id
 
     academic_student = (
         await db.execute(
