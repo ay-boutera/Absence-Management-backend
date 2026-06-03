@@ -29,12 +29,14 @@ from app.models import (
     Absence,
     CompensationRequest,
     Module,
+    PlanningSession,
     Salle,
     Session,
     Teacher,
     session_students,
     session_groups,
 )
+from app.models.planning_session import planning_session_teachers
 from app.models.student import Student
 from app.schemas.compensation_request import (
     AvailableCompensationSession,
@@ -157,7 +159,7 @@ async def _notify_student(
     response_model=list[StudentModule],
     summary="List the student's modules (for compensation module picker)",
     description="""
-Returns all modules that have sessions for the student's group.
+Returns all modules that have planning sessions for the student's group.
 Use the `id` from this list as `module_id` in the **available-sessions** endpoint.
 
 **Auth:** Student only (JWT).
@@ -180,31 +182,48 @@ async def list_my_modules(
             detail="Your academic profile was not found in the system.",
         )
 
-    student_group = academic_student.groupe.lower().strip()
+    student_group = academic_student.groupe.strip()  # e.g. "G4"
+    student_year = academic_student.niveau.strip()   # e.g. "1CS"
 
-    module_ids = (
+    # ── Query PlanningSession templates (always populated after CSV import) ──
+    # Concrete Session rows are only created lazily when a teacher opens the
+    # app, so querying Session here would yield nothing before that happens.
+    planning_sessions = (
         await db.execute(
-            select(Session.module_id).distinct()
-            .outerjoin(session_groups, session_groups.c.session_id == Session.id)
+            select(PlanningSession.subject).distinct()
             .where(
-                or_(
-                    func.lower(func.trim(Session.group)) == student_group,
-                    func.lower(func.trim(session_groups.c.group_name)) == student_group,
+                and_(
+                    func.lower(func.trim(PlanningSession.year)) == student_year.lower(),
+                    func.lower(func.trim(PlanningSession.group)) == student_group.lower(),
                 )
             )
         )
     ).scalars().all()
 
-    if not module_ids:
+    if not planning_sessions:
         return []
 
-    modules = (
-        await db.execute(
-            select(Module).where(Module.id.in_(module_ids)).order_by(Module.nom)
-        )
-    ).scalars().all()
+    # For each unique subject found in the planning, find-or-create a Module row
+    # so we always have a stable UUID to hand back to the frontend.
+    result: list[StudentModule] = []
+    seen_subjects: set[str] = set()
+    for subject in planning_sessions:
+        if subject in seen_subjects:
+            continue
+        seen_subjects.add(subject)
 
-    return [StudentModule(id=m.id, code=m.code, nom=m.nom) for m in modules]
+        module = (
+            await db.execute(select(Module).where(Module.code == subject))
+        ).scalar_one_or_none()
+        if module is None:
+            module = Module(code=subject, nom=subject)
+            db.add(module)
+            await db.flush()
+
+        result.append(StudentModule(id=module.id, code=module.code, nom=module.nom))
+
+    result.sort(key=lambda m: m.nom)
+    return result
 
 
 # ── GET /compensation-requests/available-sessions ─────────────────────────────
@@ -243,10 +262,12 @@ async def list_available_sessions_for_compensation(
             detail="Your academic profile was not found in the system.",
         )
 
-    student_group = academic_student.groupe.lower().strip()
+    student_group = academic_student.groupe.strip()
+    student_group_lower = student_group.lower()
 
-    # Find teacher(s) who teach the student's group for this module
-    teacher_ids = (
+    # ── Find teacher(s) for this module + student group ──────────────────────
+    # First try concrete Session rows (fast path for recurring sessions).
+    teacher_ids: list = (
         await db.execute(
             select(Session.teacher_id).distinct()
             .outerjoin(session_groups, session_groups.c.session_id == Session.id)
@@ -254,13 +275,38 @@ async def list_available_sessions_for_compensation(
                 and_(
                     Session.module_id == module_id,
                     or_(
-                        func.lower(func.trim(Session.group)) == student_group,
-                        func.lower(func.trim(session_groups.c.group_name)) == student_group,
+                        func.lower(func.trim(Session.group)) == student_group_lower,
+                        func.lower(func.trim(session_groups.c.group_name)) == student_group_lower,
                     ),
                 )
             )
         )
     ).scalars().all()
+
+    if not teacher_ids:
+        # Fall back to PlanningSession templates — these always exist after the
+        # admin imports the CSV, even before any teacher opens the app for the day.
+        module = (
+            await db.execute(select(Module).where(Module.id == module_id))
+        ).scalar_one_or_none()
+        if module is None:
+            return AvailableCompensationSessionsResponse(data=[], total=0)
+
+        teacher_ids = (
+            await db.execute(
+                select(planning_session_teachers.c.teacher_id).distinct()
+                .join(
+                    PlanningSession,
+                    planning_session_teachers.c.planning_session_id == PlanningSession.id,
+                )
+                .where(
+                    and_(
+                        func.lower(func.trim(PlanningSession.subject)) == module.code.lower(),
+                        func.lower(func.trim(PlanningSession.group)) == student_group_lower,
+                    )
+                )
+            )
+        ).scalars().all()
 
     if not teacher_ids:
         return AvailableCompensationSessionsResponse(data=[], total=0)
