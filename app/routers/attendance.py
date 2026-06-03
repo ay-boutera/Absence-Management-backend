@@ -17,12 +17,13 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config.enums import AbsenceSourceEnum, UserRole
+from app.config.enums import AbsenceSourceEnum, CompensationRequestStatus, UserRole
 from app.db import get_db
 from app.helpers.permissions import require_role, require_student_bearer
 from app.helpers.role_users import user_role
 from app.models import (
     Absence,
+    CompensationRequest,
     Session,
     session_groups,
     session_students,
@@ -257,6 +258,35 @@ async def mark_present(
         existing_absence.is_absent = False
         existing_absence.source = AbsenceSourceEnum.QR
         existing_absence.synced_at = now
+
+    # If this is a compensation session, delete the original absence
+    comp_req = (
+        await db.execute(
+            select(CompensationRequest).where(
+                and_(
+                    CompensationRequest.session_id == data.session_id,
+                    CompensationRequest.student_matricule == academic_student.matricule,
+                    CompensationRequest.status == CompensationRequestStatus.APPROVED,
+                    CompensationRequest.original_session_id.is_not(None),
+                )
+            )
+        )
+    ).scalar_one_or_none()
+
+    if comp_req is not None:
+        original_absence = (
+            await db.execute(
+                select(Absence).where(
+                    and_(
+                        Absence.session_id == comp_req.original_session_id,
+                        Absence.student_matricule == academic_student.matricule,
+                        Absence.is_absent.is_(True),
+                    )
+                )
+            )
+        ).scalar_one_or_none()
+        if original_absence is not None:
+            await db.delete(original_absence)
 
     await db.flush()
 

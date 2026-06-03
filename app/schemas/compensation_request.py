@@ -9,7 +9,25 @@ from pydantic import BaseModel, Field
 
 class CompensationRequestCreate(BaseModel):
     session_id: UUID
+    original_session_id: Optional[UUID] = None
     reason: str = Field(..., min_length=1, max_length=1000)
+
+
+class AvailableCompensationSession(BaseModel):
+    session_id: UUID
+    date: date
+    start_time: str
+    end_time: str
+    room: Optional[str] = None
+    teacher_name: Optional[str] = None
+    module_name: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class AvailableCompensationSessionsResponse(BaseModel):
+    data: list[AvailableCompensationSession]
+    total: int
 
 
 class CompensationRequestOut(BaseModel):

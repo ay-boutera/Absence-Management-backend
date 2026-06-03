@@ -12,12 +12,12 @@ GET    /api/v1/compensation-requests/me        Student sees their own requests
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -37,6 +37,8 @@ from app.models import (
 )
 from app.models.student import Student
 from app.schemas.compensation_request import (
+    AvailableCompensationSession,
+    AvailableCompensationSessionsResponse,
     CompensationRequestApproveOut,
     CompensationRequestCreate,
     CompensationRequestListResponse,
@@ -147,6 +149,102 @@ async def _notify_student(
     )
 
 
+# ── GET /compensation-requests/available-sessions ─────────────────────────────
+
+@router.get(
+    "/compensation-requests/available-sessions",
+    response_model=AvailableCompensationSessionsResponse,
+    summary="List sessions available for compensation this week",
+    description="""
+Returns all sessions for the selected module in the **current week (Mon–Sun)**,
+taught by the same teacher who teaches the student's group for that module.
+
+**Query params:**
+- `module_id` (required) — the module UUID
+
+**Auth:** Student only (JWT).
+""",
+)
+async def list_available_sessions_for_compensation(
+    module_id: UUID = Query(...),
+    current_user=Depends(require_role(UserRole.STUDENT)),
+    db: AsyncSession = Depends(get_db),
+):
+    student_matricule: str = current_user.student_id
+
+    academic_student = (
+        await db.execute(
+            select(AcademicStudent).where(AcademicStudent.matricule == student_matricule)
+        )
+    ).scalar_one_or_none()
+    if academic_student is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your academic profile was not found in the system.",
+        )
+
+    student_group = academic_student.groupe.lower().strip()
+
+    # Find teacher(s) who teach the student's group for this module
+    teacher_ids = (
+        await db.execute(
+            select(Session.teacher_id).distinct()
+            .outerjoin(session_groups, session_groups.c.session_id == Session.id)
+            .where(
+                and_(
+                    Session.module_id == module_id,
+                    or_(
+                        func.lower(func.trim(Session.group)) == student_group,
+                        func.lower(func.trim(session_groups.c.group_name)) == student_group,
+                    ),
+                )
+            )
+        )
+    ).scalars().all()
+
+    if not teacher_ids:
+        return AvailableCompensationSessionsResponse(data=[], total=0)
+
+    # Current week: Monday to Sunday
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    sunday = monday + timedelta(days=6)
+
+    sessions = (
+        await db.execute(
+            select(Session)
+            .options(
+                selectinload(Session.room),
+                selectinload(Session.module),
+                selectinload(Session.teacher),
+            )
+            .where(
+                and_(
+                    Session.module_id == module_id,
+                    Session.teacher_id.in_(teacher_ids),
+                    Session.date >= monday,
+                    Session.date <= sunday,
+                )
+            )
+            .order_by(Session.date, Session.start_time)
+        )
+    ).scalars().all()
+
+    result = [
+        AvailableCompensationSession(
+            session_id=s.id,
+            date=s.date,
+            start_time=s.start_time.strftime("%H:%M") if s.start_time else "",
+            end_time=s.end_time.strftime("%H:%M") if s.end_time else "",
+            room=s.room.code if s.room else None,
+            teacher_name=f"{s.teacher.first_name} {s.teacher.last_name}" if s.teacher else None,
+            module_name=s.module.nom if s.module else None,
+        )
+        for s in sessions
+    ]
+    return AvailableCompensationSessionsResponse(data=result, total=len(result))
+
+
 # ── POST /compensation-requests ────────────────────────────────────────────────
 
 @router.post(
@@ -235,6 +333,23 @@ async def create_compensation_request(
                 ),
             )
 
+    # Validate original_session_id has a real absence for this student
+    if data.original_session_id is not None:
+        original_absence = (
+            await db.execute(
+                select(Absence).where(
+                    Absence.session_id == data.original_session_id,
+                    Absence.student_matricule == student_matricule,
+                    Absence.is_absent.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        if original_absence is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No confirmed absence found for the specified original session.",
+            )
+
     # No duplicate pending request for the same session
     existing = (
         await db.execute(
@@ -253,6 +368,7 @@ async def create_compensation_request(
 
     req = CompensationRequest(
         session_id=session.id,
+        original_session_id=data.original_session_id,
         student_matricule=student_matricule,
         reason=data.reason,
         status=CompensationRequestStatus.PENDING,

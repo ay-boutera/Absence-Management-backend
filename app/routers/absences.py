@@ -148,6 +148,51 @@ async def _maybe_send_threshold_notification(
         )
 
 
+async def _notify_absent_student(
+    db: AsyncSession,
+    student_matricule: str,
+    session_row: Session,
+) -> None:
+    """Notify the student immediately after being marked absent, prompting them to act."""
+    module = (
+        await db.execute(select(Module).where(Module.id == session_row.module_id))
+    ).scalar_one_or_none()
+    module_name = module.nom if module else "module inconnu"
+
+    acad_student = (
+        await db.execute(
+            select(AcademicStudent).where(AcademicStudent.matricule == student_matricule)
+        )
+    ).scalar_one_or_none()
+    if acad_student is None:
+        return
+
+    student_user = (
+        await db.execute(
+            select(Student).where(
+                Student.email == acad_student.email,
+                Student.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if student_user is None:
+        return
+
+    await create_and_push(
+        db,
+        recipient_id=student_user.id,
+        recipient_role="student",
+        type="absence_recorded",
+        title="Absence enregistrée",
+        body=(
+            f"Vous avez été marqué(e) absent(e) en {module_name} "
+            f"le {session_row.date}. "
+            f"Vous pouvez soumettre un justificatif ou faire une demande de rattrapage."
+        ),
+        module_name=module_name,
+    )
+
+
 def _within_free_window(session: Session) -> bool:
     """True if the current time is within 15 min of the session's end time."""
     now = datetime.now(timezone.utc)
@@ -215,8 +260,9 @@ async def upsert_absence(
     await db.flush()
     await db.refresh(absence)
 
-    # Fire threshold notifications if the student is now marked absent
+    # Notify student + check threshold when marked absent
     if absence.is_absent:
+        await _notify_absent_student(db, data.student_matricule, session)
         await _maybe_send_threshold_notification(db, data.student_matricule, data.session_id)
 
     return AbsenceUpsertResponse(

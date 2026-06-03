@@ -25,6 +25,14 @@ class CompensationRequest(Base):
         nullable=False,
         index=True,
     )
+    # The session the student MISSED — used to locate and delete the original absence
+    # on approval + attendance confirmation.
+    original_session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     student_matricule = Column(
         String(50),
         ForeignKey("students.matricule", ondelete="CASCADE"),
@@ -53,7 +61,8 @@ class CompensationRequest(Base):
     rejected_at = Column(DateTime(timezone=True), nullable=True)
 
     # ── Relationships ─────────────────────────────────────────────────────────
-    session = relationship("Session", back_populates="compensation_requests")
+    session = relationship("Session", foreign_keys=[session_id], back_populates="compensation_requests")
+    original_session = relationship("Session", foreign_keys=[original_session_id])
     student = relationship("AcademicStudent", back_populates="compensation_requests")
 
     def __repr__(self) -> str:
