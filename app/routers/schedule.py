@@ -13,6 +13,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config.enums import AcademicYear, SpecialityEnum
 from app.db import get_db
 from app.helpers.permissions import get_current_user_bearer
 from app.models import PlanningSession, Teacher, UserRole
@@ -23,6 +24,8 @@ from app.schemas.planning import PlanningSessionOut, ScheduleResponse, TeacherIn
 router = APIRouter(tags=["Schedule"])
 
 YEARS_WITH_SPECIALITY = {"2CS", "3CS"}
+_VALID_YEARS = {e.value for e in AcademicYear}
+_VALID_SPECIALITIES = {e.value for e in SpecialityEnum}
 
 
 def _fmt_time(t) -> Optional[str]:
@@ -69,8 +72,12 @@ async def my_schedule(
         student_speciality: Optional[str] = None
         student_section: Optional[str] = None
 
+        if student_year not in _VALID_YEARS:
+            return ScheduleResponse(total=0, sessions=[])
+
         if student_year in YEARS_WITH_SPECIALITY:
-            student_speciality = student.program or None
+            raw_prog = student.program or None
+            student_speciality = raw_prog if raw_prog in _VALID_SPECIALITIES else None
 
         if student_group:
             # Infer section from group by checking any planning session that has this group and a section
