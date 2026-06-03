@@ -106,13 +106,10 @@ async def _get_student_profile_logic(
     ).all()
 
     # ── 4. Total sessions the student was supposed to attend ──────────────────
-    # (sessions where the student's group / year matches)
+    # Count by group name only (consistent with the attendance query — no year filter).
     total_sessions_result = await db.execute(
         select(func.count(Session.id)).where(
-            and_(
-                Session.group == academic.groupe,
-                Session.year == academic.niveau,
-            )
+            func.trim(func.lower(Session.group)) == academic.groupe.lower().strip()
         )
     )
     total_sessions = total_sessions_result.scalar_one() or 0
@@ -126,10 +123,11 @@ async def _get_student_profile_logic(
 
     for absence, session, module, teacher in absence_rows:
         # Determine if this session belongs to the student's own group
+        # Use case-insensitive/trimmed comparison to match how the SQL queries
+        # normalise groupe/niveau values (prevents false "Cross-session" labels).
         is_own_group = (
-            session.group == academic.groupe
-            and session.year == academic.niveau
-        )
+            session.group.lower().strip() == academic.groupe.lower().strip()
+        ) if session.group and academic.groupe else (session.group == academic.groupe)
 
         if is_own_group and absence.is_absent:
             total_absences += 1
@@ -300,7 +298,7 @@ async def _get_student_profile_from_account(
 
     total_sessions_result = await db.execute(
         select(func.count(Session.id)).where(
-            and_(Session.group == group_value, Session.year == student.level)
+            func.trim(func.lower(Session.group)) == group_value.lower().strip()
         )
     )
     total_sessions = total_sessions_result.scalar_one() or 0
@@ -312,7 +310,9 @@ async def _get_student_profile_from_account(
     cross_session_count = 0
 
     for absence, session, module, teacher in absence_rows:
-        is_own_group = session.group == group_value and session.year == student.level
+        is_own_group = (
+            session.group.lower().strip() == group_value.lower().strip()
+        ) if session.group and group_value else (session.group == group_value)
 
         if is_own_group and absence.is_absent:
             total_absences += 1

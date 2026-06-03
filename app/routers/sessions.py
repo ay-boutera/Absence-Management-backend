@@ -201,7 +201,7 @@ async def get_today_sessions(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profil enseignant introuvable.")
 
     # MOCK DATE: Hardcoded to a MONDAY (Lundi) for testins
-    today = datetime(2026, 6,3, tzinfo=timezone.utc).date()
+    today = datetime(2026, 5,27, tzinfo=timezone.utc).date()
 
     async with db.begin_nested():
         sessions = await _materialise_sessions_for_teacher(db, teacher, today)
@@ -386,16 +386,19 @@ async def get_session_attendance(
     all_groups += [row[0] for row in extra_group_rows]
     all_groups = list(dict.fromkeys(all_groups))  # deduplicate, preserve order
 
-    # Students from group membership
+    # Students from group membership — match by group name only (no year filter).
+    # The year filter was previously causing students whose `niveau` didn't exactly
+    # match `session.year` to be silently excluded from the attendance list.
     group_students: list[AcademicStudent] = []
     if all_groups:
         normalized_groups = [g.lower().strip() for g in all_groups]
-        filters = [func.trim(func.lower(AcademicStudent.groupe)).in_(normalized_groups)]
-        if session.year:
-            filters.append(func.trim(func.lower(AcademicStudent.niveau)) == session.year.lower().strip())
         group_students = list(
             (
-                await db.execute(select(AcademicStudent).where(and_(*filters)))
+                await db.execute(
+                    select(AcademicStudent).where(
+                        func.trim(func.lower(AcademicStudent.groupe)).in_(normalized_groups)
+                    )
+                )
             ).scalars().all()
         )
 
@@ -573,12 +576,12 @@ async def get_session_students(
     all_groups += [row[0] for row in extra_group_rows]
     all_groups = list(dict.fromkeys(all_groups))
 
+    # Match students by group name only — no year filter to avoid silently
+    # excluding students whose `niveau` doesn't exactly match `session.year`.
     group_filters = []
     if all_groups:
         normalized_groups = [g.lower().strip() for g in all_groups]
         group_filters.append(func.trim(func.lower(AcademicStudent.groupe)).in_(normalized_groups))
-    if session.year:
-        group_filters.append(func.trim(func.lower(AcademicStudent.niveau)) == session.year.lower().strip())
 
     direct_matricule_rows = (
         await db.execute(
@@ -667,12 +670,11 @@ async def get_session_summary(
     all_groups += [row[0] for row in extra_group_rows]
     all_groups = list(dict.fromkeys(all_groups))
 
+    # Match students by group name only — no year filter.
     group_filters = []
     if all_groups:
         normalized_groups = [g.lower().strip() for g in all_groups]
         group_filters.append(func.trim(func.lower(AcademicStudent.groupe)).in_(normalized_groups))
-    if session.year:
-        group_filters.append(func.trim(func.lower(AcademicStudent.niveau)) == session.year.lower().strip())
 
     direct_matricule_rows = (
         await db.execute(
