@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from app.db import get_db
 from app.helpers.permissions import get_current_user_bearer
 from app.models import PlanningSession, Teacher, UserRole
+from app.models.module import Module
 from app.models.student import Student as StudentUser
 from app.schemas.planning import PlanningSessionOut, ScheduleResponse, TeacherInfo
 
@@ -124,7 +125,17 @@ async def my_schedule(
 
     sessions = list((await db.execute(base_q)).scalars().all())
 
+    # Bulk-fetch modules whose code matches the subject strings in the sessions
+    subject_codes = {s.subject for s in sessions}
+    modules_by_code: dict[str, Module] = {}
+    if subject_codes:
+        module_rows = (await db.execute(
+            select(Module).where(Module.code.in_(subject_codes))
+        )).scalars().all()
+        modules_by_code = {m.code: m for m in module_rows}
+
     def _serialize(s: PlanningSession) -> PlanningSessionOut:
+        module = modules_by_code.get(s.subject)
         return PlanningSessionOut(
             id=s.id,
             day=s.day,
@@ -132,6 +143,7 @@ async def my_schedule(
             time_end=_fmt_time(s.time_end),
             type=s.type,
             subject=s.subject,
+            module_id=module.id if module else None,
             room=s.room,
             group=s.group,
             year=s.year,

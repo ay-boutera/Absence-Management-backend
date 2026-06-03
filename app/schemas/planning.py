@@ -28,6 +28,7 @@ class PlanningSessionOut(BaseModel):
     time_end: str            # formatted HH:MM
     type: str
     subject: str
+    module_id: Optional[UUID] = None
     room: Optional[str] = None
     group: Optional[str] = None
     year: str
