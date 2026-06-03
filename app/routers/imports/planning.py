@@ -387,9 +387,11 @@ async def import_planning_csv(
                     db.add(existing_ps)
                     updated_count += 1
 
+                # Always ensure a Module row exists for this subject
+                module = await _get_or_create_module(db, pr["subject"])
+
                 # ── Session generation (one per teacher per week) ─────────────
                 if semester_start_date and pr["teacher_objs"]:
-                    module = await _get_or_create_module(db, pr["subject"])
                     salle = await _get_or_create_salle(db, pr["room"]) if pr["room"] else None
 
                     for teacher in pr["teacher_objs"]:
@@ -458,3 +460,29 @@ async def import_planning_csv(
         history_id=history.id,
         sessions_generated=sessions_created,
     )
+
+
+# ── POST /import/planning/sync-modules ────────────────────────────────────────
+@router.post(
+    "/import/planning/sync-modules",
+    summary="Backfill Module rows from existing planning sessions",
+    description="Creates a Module row (code = subject) for every unique subject in the planning_sessions table that does not already have one. Safe to run multiple times. **Auth:** Admin only.",
+)
+async def sync_modules_from_planning(
+    current_user=Depends(require_can_import_data_bearer),
+    db: AsyncSession = Depends(get_db),
+):
+    subjects_result = await db.execute(select(PlanningSession.subject).distinct())
+    all_subjects: list[str] = [row[0] for row in subjects_result.all() if row[0]]
+
+    existing_result = await db.execute(select(Module.code).where(Module.code.in_(all_subjects)))
+    existing_codes = {row[0] for row in existing_result.all()}
+
+    created = 0
+    for subject in all_subjects:
+        if subject not in existing_codes:
+            db.add(Module(code=subject, nom=subject))
+            created += 1
+
+    await db.commit()
+    return {"created": created, "already_existed": len(all_subjects) - created, "total_subjects": len(all_subjects)}
